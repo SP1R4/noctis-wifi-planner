@@ -1,0 +1,18 @@
+node_modules/
+.DS_Store
+__MACOSX/
+dist/
+*.log
+.vite/
+.vitest-cache/
+coverage/
+
+# user-supplied font binaries (see files/fonts.css for sources)
+files/fonts/*.woff2
+
+# sample/client project data — kept out of source control
+files/*.json
+files/*.png
+files/*.jpg
+files/*.jpeg
+package-lock.json

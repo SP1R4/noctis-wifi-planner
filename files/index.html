@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>NOCTIS WiFi Planner</title>
+<link rel="stylesheet" href="fonts.css"/>
+<link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+<div class="shell">
+  <!-- ROW 1 — Meta & actions: branding, file ops, undo/redo, commit actions, help -->
+  <div class="topbar topbar-meta">
+    <span class="brand" id="brand-lbl">NOCTIS Planner</span>
+    <div class="tsep"></div>
+    <button class="btn" data-action="new-project" title="Start a fresh project">✦ New</button>
+    <button class="btn" data-action="open-upload">↑ Upload Map</button>
+    <input type="file" id="file-up" accept="image/*" style="display:none" data-change-action="upload-map"/>
+    <button class="btn" data-action="save">💾 Save</button>
+    <button class="btn" data-action="open-load">📂 Load</button>
+    <input type="file" id="load-up" accept=".json" style="display:none" data-change-action="load-project"/>
+    <div class="tsep"></div>
+    <button class="btn btn-ghost" id="btn-undo" data-action="undo" title="Undo (Ctrl+Z)" disabled>↩ Undo</button>
+    <button class="btn btn-ghost" id="btn-redo" data-action="redo" title="Redo (Ctrl+Y)" disabled>↪ Redo</button>
+
+    <div class="topbar-spacer"></div>
+
+    <div class="status"><span class="sdot"></span><span id="ap-cnt">0</span> APs · <span id="fl-cnt">0</span> floors</div>
+    <div class="tsep"></div>
+    <button class="btn btn-primary" id="btn-pres" data-action="toggle-present" title="Presentation mode (P)">▶ Present</button>
+    <button class="btn btn-primary" data-action="export" title="Export HTML report">↓ Export</button>
+    <button class="btn btn-primary" data-action="pdf" title="Export PDF">⎙ PDF</button>
+    <button class="btn btn-icon-only" id="btn-theme" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle theme">☾</button>
+    <button class="btn btn-icon-only" data-action="show-settings" title="Project settings" aria-label="Settings">⚙</button>
+    <button class="btn btn-icon-only" data-action="show-help" title="Keyboard shortcuts (?)" aria-label="Help">?</button>
+  </div>
+
+  <!-- ROW 2 — Workspace tools: modes (icon-only strip), view toggles, zoom, scale -->
+  <div class="topbar topbar-tools">
+    <!-- Mode toolstrip (icon-only) -->
+    <div class="toolstrip" role="toolbar" aria-label="Drawing tools">
+      <button class="btn-tool active" id="btn-add" data-action="set-mode" data-arg="add" title="Add AP (A)" aria-label="Add AP">+</button>
+      <button class="btn-tool" id="btn-sel" data-action="set-mode" data-arg="sel" title="Select (S)" aria-label="Select">↖</button>
+      <button class="btn-tool" id="btn-dz" data-action="set-mode" data-arg="dz" title="Dead Zone (D)" aria-label="Dead Zone">⚠</button>
+      <button class="btn-tool" id="btn-sw" data-action="set-mode" data-arg="sw" title="Switch/Router (W)" aria-label="Switch / Router">⊞</button>
+      <button class="btn-tool" id="btn-ruler" data-action="set-mode" data-arg="ruler" title="Ruler (R)" aria-label="Ruler">↔</button>
+      <button class="btn-tool" id="btn-wall" data-action="set-mode" data-arg="wall" title="Wall (L)" aria-label="Wall">▌</button>
+    </div>
+    <div class="tsep"></div>
+
+    <!-- View toggles -->
+    <button class="toggle active" id="btn-cov" data-action="toggle-coverage" title="Show/hide coverage rings (V)">
+      <span class="toggle-lbl">Coverage</span>
+      <span class="toggle-switch" aria-hidden="true"></span>
+    </button>
+    <button class="toggle" id="btn-ol" data-action="toggle-ol" title="Show coverage overlaps (O)">
+      <span class="toggle-lbl">Overlaps</span>
+      <span class="toggle-switch" aria-hidden="true"></span>
+    </button>
+    <button class="toggle" id="btn-heat" data-action="toggle-heat" title="Signal heatmap (H)">
+      <span class="toggle-lbl">Heatmap</span>
+      <span class="toggle-switch" aria-hidden="true"></span>
+    </button>
+    <button class="toggle" id="btn-grid" data-action="toggle-grid" title="Snap to grid (G)">
+      <span class="toggle-lbl">Grid</span>
+      <span class="toggle-switch" aria-hidden="true"></span>
+    </button>
+
+    <div class="topbar-spacer"></div>
+
+    <!-- Scale (moved up from floor row) -->
+    <div class="scale-cluster">
+      <span class="scale-lbl">SCALE</span>
+      <input id="scale-m" type="number" min="1" value="100" class="scale-in" data-input-action="update-scale"/>
+      <span class="scale-lbl">m/100px</span>
+      <div class="tsep"></div>
+      <span class="scale-lbl">COV</span>
+      <span id="cov-pct" class="cov-val">—</span>
+    </div>
+    <div class="tsep"></div>
+
+    <!-- Zoom -->
+    <div class="zoom-grp">
+      <button class="zbtn" data-action="zoom-out" title="Zoom out (−)">−</button>
+      <span class="zval" id="zval">100%</span>
+      <button class="zbtn" data-action="zoom-in" title="Zoom in (+)">+</button>
+      <button class="zbtn zbtn-fit" data-action="zoom-fit" title="Fit to screen (0)">FIT</button>
+    </div>
+  </div>
+
+  <!-- ROW 3 — Floor tabs only (scale moved to row 2) -->
+  <div class="topbar floor-row">
+    <div class="floor-tabs" id="floor-tabs"></div>
+    <button class="ftab-add" data-action="add-floor" title="Add floor">+</button>
+  </div>
+
+  <div class="workspace">
+    <!-- Left list -->
+    <div class="sidebar" id="left-sb">
+      <div class="sb-head sb-head-counters" id="sb-counters"></div>
+      <div class="sb-search-row">
+        <input type="text" id="sb-search" class="sb-search" placeholder="Search items…" data-input-action="sb-search" autocomplete="off"/>
+        <button class="sb-search-clear" id="sb-search-clear" data-action="sb-search-clear" title="Clear search" aria-label="Clear search">×</button>
+      </div>
+      <div class="sb-scroll" id="left-list"></div>
+      <div class="sb-resize-handle" id="sb-resize-handle" aria-label="Resize sidebar"></div>
+    </div>
+
+    <!-- Map -->
+    <div class="map-area" id="map-area">
+      <div id="empty-state">
+        <div class="es-line">Upload a floor plan to begin</div>
+        <div class="es-sub">Click <strong>↑ Upload Map</strong> above · Press <kbd>?</kbd> for shortcuts</div>
+      </div>
+      <div class="hint-bar" id="hint-bar">Click map to place an AP</div>
+      <div id="vp" class="cur-cross">
+        <div id="cv">
+          <img id="mi" src="" alt="Map"/>
+          <svg id="sl" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <filter id="gf"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            </defs>
+            <g id="grid-layer"></g>
+            <g id="heat-layer"></g>
+            <g id="ol-layer"></g>
+            <g id="wall-layer"></g>
+            <g id="sw-layer"></g>
+            <g id="ap-layer"></g>
+            <g id="dz-layer"></g>
+            <g id="ruler-layer"></g>
+          </svg>
+        </div>
+      </div>
+      <div class="map-leg">
+        <div class="leg-i"><div class="leg-dot"></div>AP</div>
+        <div class="leg-i"><div class="leg-ring"></div>Coverage</div>
+        <div class="leg-i" id="leg-ol" style="display:none"><div class="leg-ol"></div>Overlap</div>
+        <div class="leg-i">⚠ Dead Zone</div>
+        <div class="leg-i">⊞ Switch</div>
+        <span class="leg-brand">NOCTIS</span>
+      </div>
+      <div id="scale-bar" style="display:none">
+        <div class="sbar-line" id="sbar-line"></div>
+        <div class="sbar-txt" id="sbar-txt"></div>
+      </div>
+    </div>
+
+    <!-- Right panel -->
+    <div class="sidebar right" id="right-sb">
+      <div class="sb-head" id="rp-head">Properties</div>
+      <div class="rp-body" id="rp-body"><div class="rp-empty"><div class="rp-empty-icon">◎</div><div class="rp-empty-txt">Select an item<br>to edit properties</div></div></div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<div id="ctx-menu"></div>
+<div id="mbg"><div id="mdl">
+  <div class="mdl-title" id="mdl-title">Confirm</div>
+  <div class="mdl-body" id="mdl-body"></div>
+  <div class="mdl-actions">
+    <button class="btn" data-action="modal-close">Cancel</button>
+    <button class="btn danger" id="mdl-ok" data-action="modal-ok">OK</button>
+  </div>
+</div></div>
+<script src="app.js"></script>
+</body>
+</html>

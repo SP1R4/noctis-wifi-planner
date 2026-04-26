@@ -1,0 +1,1054 @@
+/* ═══════════════════════════════════════════════════════════════
+   NOCTIS WiFi Planner — light theme
+   Cream bg, black ink, hairlines. Matches NOCTIS brand identity.
+   ═══════════════════════════════════════════════════════════════ */
+
+:root{
+  /* Surfaces */
+  --bg:        #efece5;            /* cream — main canvas / topbar */
+  --surface:   #f6f4ef;            /* recessed panels (sidebars) */
+  --surface-2: #faf8f3;            /* hover states */
+  --map-bg:    #e9e6df;            /* map area (slightly cooler) */
+
+  /* Ink */
+  --ink:       #000;
+  --ink-85:    rgba(0,0,0,.85);
+  --ink-70:    rgba(0,0,0,.7);
+  --ink-55:    rgba(0,0,0,.55);
+  --ink-45:    rgba(0,0,0,.45);
+  --ink-30:    rgba(0,0,0,.3);
+  --ink-20:    rgba(0,0,0,.2);
+  --ink-12:    rgba(0,0,0,.12);
+  --ink-08:    rgba(0,0,0,.08);
+  --ink-04:    rgba(0,0,0,.04);
+
+  /* Hairlines */
+  --hair:      rgba(0,0,0,.12);
+  --hair-dark: rgba(0,0,0,.2);
+
+  /* Signal levels — encoded by opacity/weight, not hue */
+  --sig-strong: #000;
+  --sig-medium: rgba(0,0,0,.55);
+  --sig-weak:   rgba(0,0,0,.3);
+
+  /* Elevation — Apple-influenced soft shadows. The "1" is for cards/panels
+     that sit on the canvas, "2" is for floating overlays (modals, popovers),
+     "inset" is for recessed surfaces (the map area). */
+  --shadow-1:    0 1px 2px rgba(0,0,0,.04), 0 2px 8px rgba(0,0,0,.04);
+  --shadow-2:    0 4px 12px rgba(0,0,0,.08), 0 12px 40px rgba(0,0,0,.10);
+  --shadow-inset: inset 0 1px 2px rgba(0,0,0,.04);
+  --highlight-top: inset 0 1px 0 rgba(255,255,255,.6);
+
+  /* Radii — consistent rounding system. Anything bigger than these gets
+     intentionally pill-shaped (999px) for primary buttons. */
+  --r-1: 6px;     /* form inputs, small buttons */
+  --r-2: 8px;     /* default buttons, toolstrip */
+  --r-3: 10px;    /* panels, cards */
+  --r-4: 14px;    /* modals, large surfaces */
+
+  /* Motion — single spring-ish curve used everywhere for consistency.
+     Apple-style ease-out: starts fast, settles softly. */
+  --ease:    cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1);
+  --t-fast:  .12s;
+  --t-base:  .18s;
+  --t-slow:  .28s;
+}
+
+/* Dark mode palette. Same conceptual roles, inverted lightness. The "ink" tokens
+   become near-white tints, surfaces get progressively darker. The map background
+   is slightly lighter than the chrome to retain the visual "the map is a surface"
+   contrast users expect. */
+body.theme-dark{
+  --bg:        #14140e;            /* deep warm-black for main chrome */
+  --surface:   #1c1c14;            /* sidebars */
+  --surface-2: #25251c;            /* hover */
+  --map-bg:    #28281f;            /* map area background */
+
+  --ink:       #efece5;
+  --ink-85:    rgba(239,236,229,.85);
+  --ink-70:    rgba(239,236,229,.7);
+  --ink-55:    rgba(239,236,229,.55);
+  --ink-45:    rgba(239,236,229,.45);
+  --ink-30:    rgba(239,236,229,.3);
+  --ink-20:    rgba(239,236,229,.2);
+  --ink-12:    rgba(239,236,229,.12);
+  --ink-08:    rgba(239,236,229,.08);
+  --ink-04:    rgba(239,236,229,.04);
+
+  --hair:      rgba(239,236,229,.14);
+  --hair-dark: rgba(239,236,229,.22);
+
+  --sig-strong: #efece5;
+  --sig-medium: rgba(239,236,229,.55);
+  --sig-weak:   rgba(239,236,229,.3);
+
+  /* In dark mode, shadows go darker (since light shadows wouldn't contrast),
+     and the top highlight uses a faint warm tint instead of white. */
+  --shadow-1:    0 1px 3px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.3);
+  --shadow-2:    0 8px 24px rgba(0,0,0,.5), 0 16px 48px rgba(0,0,0,.4);
+  --shadow-inset: inset 0 1px 2px rgba(0,0,0,.4);
+  --highlight-top: inset 0 1px 0 rgba(239,236,229,.06);
+}
+/* Map image gets a subtle desaturation in dark mode so satellite/aerial photos
+   don't burn through the moody chrome. */
+body.theme-dark #mi{filter:brightness(.78) saturate(.85)}
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{
+  background:var(--bg);
+  height:100vh;overflow:hidden;
+  font-family:'Rajdhani',sans-serif;
+  color:var(--ink);
+}
+.shell{display:flex;flex-direction:column;height:100vh}
+
+/* ── Topbar ────────────────────────────────────────────────────── */
+.topbar{
+  flex-shrink:0;display:flex;align-items:center;gap:6px;
+  padding:7px 14px;
+  background:var(--bg);
+  border-bottom:1px solid var(--hair);
+  z-index:50;flex-wrap:wrap;
+}
+/* Row 1: meta + actions. Slightly tighter vertical padding, keeps brand/status/commit. */
+.topbar-meta{padding:6px 14px}
+/* Row 2: workspace tools. Has a darker bottom rule to separate from floor tabs.
+   Adds a 1px shadow below — feels like the row "sits on" the row below it. */
+.topbar-tools{padding:6px 14px;border-bottom:1px solid var(--hair);box-shadow:0 1px 0 var(--ink-04)}
+/* Invisible flex element that shoves what follows to the far end of the row */
+.topbar-spacer{flex:1 1 auto}
+.brand{
+  font-size:10px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink);
+  letter-spacing:.2em;text-transform:uppercase;font-weight:700;
+  margin-right:6px;white-space:nowrap;
+}
+.tsep{width:1px;height:18px;background:var(--hair);flex-shrink:0}
+
+.btn{
+  font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:600;
+  letter-spacing:.09em;text-transform:uppercase;
+  padding:6px 14px;border-radius:999px;
+  border:1px solid var(--ink-20);
+  background:transparent;
+  color:var(--ink);
+  cursor:pointer;
+  transition:background var(--t-fast) var(--ease),
+             border-color var(--t-fast) var(--ease),
+             transform var(--t-fast) var(--ease),
+             box-shadow var(--t-fast) var(--ease),
+             color var(--t-fast) var(--ease);
+  white-space:nowrap;display:inline-flex;align-items:center;gap:5px;
+}
+.btn:hover{background:var(--ink-04);border-color:var(--ink-45)}
+.btn:active{transform:scale(.97)}
+.btn.active{background:var(--ink);color:var(--bg);border-color:var(--ink);box-shadow:var(--shadow-1)}
+/* variant slots kept for backward compat — all collapse to a neutral look */
+.btn.warn,.btn.success,.btn.danger,.btn.purple{color:var(--ink);border-color:var(--ink-20);background:transparent}
+.btn.warn:hover,.btn.success:hover,.btn.danger:hover,.btn.purple:hover{background:var(--ink-04);border-color:var(--ink-45)}
+.btn.warn.active,.btn.success.active,.btn.danger.active,.btn.purple.active{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.btn:disabled{opacity:.28;cursor:not-allowed}
+
+/* Primary — filled solid ink. Reserved for terminal actions: Present, Export, PDF.
+   Distinct from plain `.btn` so the commit actions don't visually blend with neutral buttons. */
+.btn.btn-primary{
+  background:var(--ink);color:var(--bg);border-color:var(--ink);
+  box-shadow:var(--shadow-1);
+}
+.btn.btn-primary:hover{background:var(--ink-85);border-color:var(--ink-85)}
+.btn.btn-primary:active{transform:scale(.96)}
+.btn.btn-primary.active{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+
+/* Ghost — recedes. For secondary actions like Undo/Redo so they don't compete with primary flow. */
+.btn.btn-ghost{
+  border-color:transparent;color:var(--ink-55);
+}
+.btn.btn-ghost:hover{background:var(--ink-04);color:var(--ink);border-color:var(--ink-20)}
+.btn.btn-ghost:disabled{border-color:transparent}
+
+/* Icon-only circular button — for single-glyph buttons like `?` help */
+.btn.btn-icon-only{
+  width:28px;height:28px;padding:0;border-radius:50%;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:13px;letter-spacing:0;
+}
+
+/* ── Toggle switches (view options) ─────────────────────────── */
+/* Apple-style toggle: a label + a sliding pill. The whole thing is a button
+   element so existing JS dispatch works unchanged. .active class on the
+   button drives the "on" state. */
+.toggle{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:5px 10px 5px 14px;
+  border:1px solid var(--ink-12);
+  border-radius:999px;
+  background:transparent;
+  color:var(--ink-70);cursor:pointer;
+  font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:500;
+  letter-spacing:.01em;
+  transition:background var(--t-fast) var(--ease),
+             border-color var(--t-fast) var(--ease),
+             color var(--t-fast) var(--ease);
+}
+.toggle:hover{border-color:var(--ink-30);color:var(--ink);background:var(--ink-04)}
+.toggle.active{color:var(--ink);border-color:var(--ink-30)}
+.toggle-lbl{line-height:1;white-space:nowrap}
+.toggle-switch{
+  position:relative;display:inline-block;
+  width:28px;height:16px;flex-shrink:0;
+  background:var(--ink-20);
+  border-radius:999px;
+  transition:background var(--t-base) var(--ease);
+}
+.toggle-switch::after{
+  content:'';position:absolute;
+  top:2px;left:2px;
+  width:12px;height:12px;
+  background:var(--bg);
+  border-radius:50%;
+  box-shadow:var(--shadow-1);
+  transition:transform var(--t-base) var(--ease-spring);
+}
+.toggle.active .toggle-switch{background:var(--ink)}
+.toggle.active .toggle-switch::after{transform:translateX(12px)}
+.toggle:active .toggle-switch::after{transform:scale(1.1)}
+.toggle.active:active .toggle-switch::after{transform:translateX(12px) scale(1.1)}
+
+/* ── Toolstrip (icon-only mode selector) ──────────────────────── */
+/* macOS segmented-control style. Buttons share a rounded container, hover
+   tint is subtle, active button gets its own filled "pill" background plus
+   a soft shadow so it visually lifts above the others. */
+.toolstrip{
+  display:inline-flex;align-items:center;
+  border:1px solid var(--ink-12);border-radius:var(--r-2);
+  overflow:hidden;background:var(--surface-2);
+  height:30px;padding:2px;gap:1px;
+  box-shadow:var(--shadow-inset);
+}
+.btn-tool{
+  width:34px;height:100%;
+  display:inline-flex;align-items:center;justify-content:center;
+  background:transparent;border:none;
+  color:var(--ink);cursor:pointer;
+  font-family:'Rajdhani',sans-serif;font-size:15px;font-weight:600;
+  border-radius:calc(var(--r-2) - 4px);
+  transition:background var(--t-fast) var(--ease),
+             box-shadow var(--t-fast) var(--ease),
+             color var(--t-fast) var(--ease),
+             transform var(--t-fast) var(--ease);
+  position:relative;padding:0;
+}
+.btn-tool:hover{background:var(--ink-04)}
+.btn-tool:active{transform:scale(.92)}
+.btn-tool.active{
+  background:var(--bg);
+  color:var(--ink);
+  box-shadow:var(--shadow-1);
+}
+/* No more accent bar — the box-shadow + background contrast does the lifting */
+
+/* ── Scale cluster ─────────────────────────────────────────────── */
+/* Inline scale + coverage readout. Moved up from row 3 to row 2 since it's
+   workspace-level data, not floor-level data. */
+.scale-cluster{
+  display:inline-flex;align-items:center;gap:7px;
+}
+
+.status{
+  font-size:10px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink-55);letter-spacing:.1em;margin-left:auto;
+  display:flex;align-items:center;gap:6px;
+}
+.sdot{width:5px;height:5px;border-radius:50%;background:var(--ink);animation:blink 2.5s ease-in-out infinite}
+
+.zoom-grp{display:flex;align-items:center;gap:3px}
+.zbtn{
+  width:26px;height:26px;border-radius:50%;
+  border:1px solid var(--ink-20);background:transparent;color:var(--ink);
+  cursor:pointer;font-size:13px;font-family:monospace;
+  display:flex;align-items:center;justify-content:center;
+  transition:background var(--t-fast) var(--ease),
+             border-color var(--t-fast) var(--ease),
+             transform var(--t-fast) var(--ease);
+}
+.zbtn:hover{background:var(--ink-04);border-color:var(--ink-45)}
+.zbtn:active{transform:scale(.92)}
+.zbtn-fit{
+  width:auto;padding:0 12px;border-radius:999px;
+  font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:.15em;
+}
+.zval{font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--ink-55);min-width:34px;text-align:center}
+
+/* Floor tabs */
+.floor-tabs{display:flex;align-items:center;gap:4px}
+.ftab{
+  display:inline-flex;align-items:center;gap:6px;
+  font-family:'Share Tech Mono',monospace;font-size:10px;
+  padding:5px 8px 5px 14px;border-radius:999px;
+  border:1px solid var(--ink-12);background:transparent;
+  color:var(--ink-55);cursor:pointer;white-space:nowrap;
+  letter-spacing:.05em;
+  transition:background var(--t-fast) var(--ease),
+             border-color var(--t-fast) var(--ease),
+             color var(--t-fast) var(--ease),
+             transform var(--t-fast) var(--ease);
+}
+.ftab:hover{color:var(--ink);border-color:var(--ink-30);background:var(--ink-04)}
+.ftab:active{transform:scale(.97)}
+.ftab.active{background:var(--ink);border-color:var(--ink);color:var(--bg);box-shadow:var(--shadow-1)}
+.ftab-add{
+  width:26px;height:26px;border-radius:50%;
+  border:1px solid var(--ink-12);background:transparent;color:var(--ink-45);
+  cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;
+  transition:background var(--t-fast) var(--ease),
+             border-color var(--t-fast) var(--ease),
+             color var(--t-fast) var(--ease),
+             transform var(--t-fast) var(--ease);
+}
+.ftab-add:hover{background:var(--ink-04);color:var(--ink);border-color:var(--ink-45)}
+.ftab-add:active{transform:scale(.92)}
+
+/* Floor delete × — small icon button inside each tab */
+.ftab-name{display:inline-block;line-height:1}
+.ftab-del{
+  width:16px;height:16px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  border:none;background:transparent;
+  color:var(--ink-30);cursor:pointer;font-size:13px;line-height:1;
+  border-radius:50%;padding:0;
+  transition:all .12s;
+  font-family:'Share Tech Mono',monospace;
+}
+.ftab-del:hover{background:var(--ink);color:var(--bg)}
+.ftab.active .ftab-del{color:rgba(239,236,229,.5)}
+.ftab.active .ftab-del:hover{background:var(--bg);color:var(--ink)}
+
+/* Mode hint bar — floating pill anchored to bottom-center of the map area.
+   Apple-style "ephemeral guidance" pattern: sits over content without taking
+   vertical space, fades to the back when not changing. Auto-hide is handled
+   in JS — CSS just controls the visual states. */
+.hint-bar{
+  position:absolute;
+  left:50%;bottom:18px;transform:translateX(-50%);
+  z-index:6;
+  font-size:11px;font-family:'Rajdhani',sans-serif;font-weight:500;
+  color:var(--ink-70);letter-spacing:.01em;
+  padding:7px 16px;
+  background:var(--bg);
+  border:1px solid var(--ink-12);
+  border-radius:999px;
+  box-shadow:var(--shadow-2);
+  pointer-events:none;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  max-width:80%;
+  /* Subtle blur of whatever's behind so the pill reads as "above" the map */
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+  /* Animation for show/hide */
+  opacity:1;
+  transition:opacity var(--t-base) var(--ease),
+             transform var(--t-base) var(--ease-spring);
+}
+/* Faded state — applied by JS after the pill has been showing for a while.
+   Stays partially visible so the user can still tell what mode they're in. */
+.hint-bar.faded{opacity:.4;pointer-events:auto}
+.hint-bar.faded:hover{opacity:1;transition-duration:var(--t-fast)}
+/* Hidden in present mode (set inline by togglePresent) */
+
+/* Floor-row specifics (overrides the generic .topbar) */
+.topbar.floor-row{padding:4px 14px;gap:5px;border-top:none}
+.topbar.floor-row.present-slim{
+  justify-content:center;
+  background:var(--bg);
+  padding:6px 14px;
+  border-bottom:1px solid var(--hair);
+}
+.topbar.floor-row.present-slim::after{
+  content:'NOCTIS · ESC TO EXIT';
+  position:absolute;right:14px;top:50%;transform:translateY(-50%);
+  font-family:'Share Tech Mono',monospace;font-size:9px;
+  letter-spacing:.2em;color:var(--ink-45);font-weight:700;
+}
+.topbar.floor-row.present-slim{position:relative}
+.scale-lbl{
+  font-size:9px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink-45);letter-spacing:.12em;text-transform:uppercase;
+}
+.scale-in{
+  width:56px;padding:3px 7px;
+  background:var(--bg);
+  border:1px solid var(--ink-20);border-radius:2px;
+  color:var(--ink);
+  font-family:'Share Tech Mono',monospace;font-size:10px;
+  outline:none;
+}
+.scale-in:focus{border-color:var(--ink)}
+.cov-val{
+  font-size:10px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink);min-width:36px;letter-spacing:.08em;
+}
+.cov-val .cov-all{color:var(--ink-45);margin-left:2px}
+.sb-head-count{color:var(--ink-45);margin-left:4px;font-weight:400}
+
+/* ── Right-panel property editor ──────────────────────────────── */
+/* Section headers: sentence case Rajdhani for friendlier feel — was small
+   caps Share Tech Mono which read as "industrial monitor". The hairline
+   divider underneath provides the visual separation that the heavy
+   typography used to provide. */
+.ep-section{
+  font-size:13px;font-family:'Rajdhani',sans-serif;
+  color:var(--ink);letter-spacing:.01em;font-weight:600;
+  margin:18px 0 10px;padding-bottom:7px;border-bottom:1px solid var(--hair);
+}
+.ep-section:first-child{margin-top:0}
+.ep-row{margin-bottom:12px}
+.ep-lbl{
+  display:block;margin-bottom:5px;
+  font-size:11px;font-family:'Rajdhani',sans-serif;
+  color:var(--ink-55);letter-spacing:.01em;font-weight:500;
+}
+.ep-in,.ep-sel,.ep-txt{
+  width:100%;padding:7px 10px;
+  background:var(--bg);
+  border:1px solid var(--ink-20);border-radius:var(--r-1);
+  color:var(--ink);
+  font-family:'Rajdhani',sans-serif;font-size:12px;
+  outline:none;
+  transition:border-color var(--t-fast) var(--ease),
+             box-shadow var(--t-fast) var(--ease);
+}
+.ep-in:hover,.ep-sel:hover,.ep-txt:hover{border-color:var(--ink-45)}
+.ep-in:focus,.ep-sel:focus,.ep-txt:focus{
+  border-color:var(--ink);
+  /* Subtle focus ring instead of default browser blue */
+  box-shadow:0 0 0 3px var(--ink-08);
+}
+.ep-sel optgroup{
+  font-family:'Share Tech Mono',monospace;font-size:10px;font-style:normal;
+  font-weight:700;letter-spacing:.15em;text-transform:uppercase;
+  color:var(--ink-55);background:var(--surface);
+}
+.ep-sel option{
+  font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:400;
+  color:var(--ink);background:var(--bg);
+  padding:4px;
+}
+.ep-txt{min-height:52px;resize:vertical;font-size:11px}
+.ep-mono{font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:.03em}
+.ep-slider-row{display:flex;align-items:center;gap:10px}
+.ep-rng{flex:1;accent-color:var(--ink);margin:0}
+.ep-rng-val{
+  min-width:48px;text-align:right;
+  font-size:10px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink);letter-spacing:.06em;
+}
+.ep-check{
+  display:flex;align-items:center;gap:8px;cursor:pointer;
+  font-size:11px;color:var(--ink-70);
+  padding:4px 0;
+}
+.ep-check input[type="checkbox"]{accent-color:var(--ink);width:14px;height:14px;cursor:pointer}
+.ep-btn-row{display:flex;gap:6px;margin-top:10px}
+.ep-btn-row .btn{flex:1;justify-content:center;font-size:10px}
+.ep-del{
+  width:100%;justify-content:center;margin-top:14px;
+  border-color:var(--ink);
+}
+.ep-del:hover{background:var(--ink);color:var(--bg)}
+
+/* ── Workspace ─────────────────────────────────────────────────── */
+.workspace{flex:1;display:flex;overflow:hidden}
+
+/* ── Sidebar ──────────────────────────────────────────────────── */
+.sidebar{
+  width:220px;flex-shrink:0;display:flex;flex-direction:column;
+  background:var(--surface);border-right:1px solid var(--hair);overflow:hidden;
+  /* Top edge highlight — the trick that makes a flat panel feel "lifted".
+     In dark mode the var resolves to faint warm white; in light mode, true white. */
+  box-shadow:var(--highlight-top);
+}
+/* Left sidebar width is variable so the user can resize it via the drag handle.
+   The CSS var is set on :root by JS, and persisted to localStorage. */
+.sidebar#left-sb{width:var(--left-sb-w,220px);position:relative}
+.sidebar.right{border-right:none;border-left:1px solid var(--hair);width:240px}
+/* Drag handle: a 6px-wide invisible strip on the right edge of the left sidebar.
+   Renders a 1px line on hover/drag so the user knows what they're grabbing. */
+.sb-resize-handle{
+  position:absolute;top:0;right:-3px;width:6px;height:100%;
+  cursor:col-resize;z-index:10;
+  background:transparent;
+  transition:background .12s;
+}
+.sb-resize-handle:hover,
+.sb-resize-handle.dragging{background:var(--ink-20)}
+body.sb-resizing{cursor:col-resize;user-select:none}
+body.sb-resizing iframe{pointer-events:none}
+.sb-head{
+  padding:14px 16px 12px;
+  font-size:13px;font-family:'Rajdhani',sans-serif;
+  color:var(--ink);letter-spacing:.01em;font-weight:600;
+  border-bottom:1px solid var(--hair);background:var(--bg);
+}
+/* Counter row in the left sidebar header: one pill per item type with icon + count + label. */
+.sb-head-counters{
+  display:flex;align-items:center;gap:9px;
+  padding:9px 12px;flex-wrap:wrap;
+}
+
+/* Search row — sits between counters and list. Filter is debounced+cheap. */
+.sb-search-row{
+  position:relative;
+  padding:6px 10px 8px;
+  border-bottom:1px solid var(--hair);
+  background:var(--bg);
+}
+.sb-search{
+  width:100%;padding:7px 28px 7px 32px;
+  background:var(--ink-04);
+  border:1px solid transparent;border-radius:var(--r-2);
+  color:var(--ink);
+  font-family:'Rajdhani',sans-serif;font-size:12px;
+  outline:none;
+  transition:background var(--t-fast) var(--ease),
+             border-color var(--t-fast) var(--ease),
+             box-shadow var(--t-fast) var(--ease);
+}
+.sb-search::placeholder{color:var(--ink-45)}
+.sb-search:hover{background:var(--ink-08)}
+.sb-search:focus{
+  background:var(--bg);border-color:var(--ink-30);
+  box-shadow:0 0 0 3px var(--ink-08);
+}
+/* Magnifying glass icon — pseudo-element, no SVG needed */
+.sb-search-row::before{
+  content:'⌕';
+  position:absolute;left:20px;top:50%;transform:translateY(-50%);
+  font-size:14px;color:var(--ink-45);pointer-events:none;line-height:1;
+}
+.sb-search-clear{
+  position:absolute;right:18px;top:50%;transform:translateY(-50%);
+  width:18px;height:18px;border-radius:50%;
+  background:var(--ink-30);border:none;color:var(--bg);
+  font-size:12px;line-height:1;cursor:pointer;
+  display:none;align-items:center;justify-content:center;
+  transition:background var(--t-fast) var(--ease),
+             transform var(--t-fast) var(--ease);
+  padding:0;font-family:inherit;
+}
+.sb-search-clear:hover{background:var(--ink)}
+.sb-search-clear:active{transform:translateY(-50%) scale(.85)}
+/* Visible when search-row has the .has-text class (set by JS) */
+.sb-search-row.has-text .sb-search-clear{display:inline-flex}
+/* "No matches" message styling — reuses .empty-msg base */
+.no-match-msg{
+  font-size:12px;font-family:'Rajdhani',sans-serif;
+  color:var(--ink-45);font-weight:500;
+  padding:24px 14px;text-align:center;line-height:1.55;
+}
+.no-match-msg .nm-query{color:var(--ink);font-weight:600}
+.cnt-pill{
+  display:inline-flex;align-items:baseline;gap:4px;
+  font-family:'Share Tech Mono',monospace;line-height:1;
+}
+.cnt-pill .cnt-icon{font-size:10px;color:var(--ink-55);font-weight:normal}
+.cnt-pill .cnt-num{font-size:13px;color:var(--ink);font-weight:700;letter-spacing:0;text-transform:none}
+.cnt-pill .cnt-lbl{font-size:8px;color:var(--ink-45);letter-spacing:.15em;text-transform:uppercase}
+.cnt-pill[title="Access Points"] .cnt-icon{color:var(--ink-70)}
+.sb-scroll{flex:1;overflow-y:auto;padding:8px 0}
+.sb-scroll::-webkit-scrollbar{width:6px}
+.sb-scroll::-webkit-scrollbar-track{background:transparent}
+.sb-scroll::-webkit-scrollbar-thumb{background:var(--ink-20);border-radius:3px}
+.sb-scroll::-webkit-scrollbar-thumb:hover{background:var(--ink-45)}
+
+.sec-lbl{
+  font-size:11px;font-family:'Rajdhani',sans-serif;
+  color:var(--ink-45);letter-spacing:.01em;font-weight:500;
+  padding:14px 12px 6px 14px;
+}
+.empty-msg{
+  font-size:12px;font-family:'Rajdhani',sans-serif;
+  color:var(--ink-45);letter-spacing:.01em;line-height:1.55;font-weight:500;
+  padding:24px 14px;text-align:center;
+}
+
+.list-item{
+  display:flex;align-items:center;gap:10px;
+  padding:9px 12px;margin:0 6px 2px;
+  cursor:pointer;position:relative;
+  border-radius:var(--r-2);
+  transition:background var(--t-fast) var(--ease),
+             transform var(--t-fast) var(--ease);
+}
+.list-item:hover{background:var(--ink-04)}
+.list-item:active{transform:scale(.99)}
+.list-item.active{background:var(--ink-08)}
+.list-item.locked{opacity:.55}
+
+.li-dot{
+  width:7px;height:7px;border-radius:50%;background:var(--ink);flex-shrink:0;
+  transition:box-shadow var(--t-fast) var(--ease);
+}
+.list-item.active .li-dot{box-shadow:0 0 0 3px var(--ink-12)}
+.li-info{flex:1;min-width:0}
+.li-name{
+  font-size:12px;font-weight:600;color:var(--ink);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.li-sub{
+  font-size:9px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink-55);letter-spacing:.05em;margin-top:1px;
+}
+.li-sig{font-size:9px;font-family:'Share Tech Mono',monospace;flex-shrink:0;letter-spacing:.05em}
+.li-sig.sig-s{color:var(--ink)}
+.li-sig.sig-m{color:var(--ink-55)}
+.li-sig.sig-w{color:var(--ink-30)}
+.li-lock{font-size:10px;color:var(--ink-45)}
+.li-del{
+  width:22px;height:22px;border-radius:50%;
+  border:1px solid transparent;background:transparent;
+  color:var(--ink-30);cursor:pointer;font-size:11px;
+  display:flex;align-items:center;justify-content:center;
+  transition:background var(--t-fast) var(--ease),
+             color var(--t-fast) var(--ease),
+             border-color var(--t-fast) var(--ease),
+             transform var(--t-fast) var(--ease);
+  flex-shrink:0;
+}
+.li-del:hover{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.li-del:active{transform:scale(.88)}
+
+/* ── Right panel ──────────────────────────────────────────────── */
+.rp-body{flex:1;overflow-y:auto;padding:14px}
+.rp-body::-webkit-scrollbar{width:6px}
+.rp-body::-webkit-scrollbar-track{background:transparent}
+.rp-body::-webkit-scrollbar-thumb{background:var(--ink-20);border-radius:3px}
+
+.rp-empty{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:9px;padding:28px 14px;color:var(--ink-30);text-align:center;
+}
+.rp-empty-icon{font-size:28px;color:var(--ink-20)}
+.rp-empty-txt{
+  font-size:12px;font-family:'Rajdhani',sans-serif;
+  color:var(--ink-45);letter-spacing:.01em;line-height:1.55;font-weight:500;
+}
+
+.ep-row{margin-bottom:12px}
+.ep-lbl{
+  font-size:11px;font-family:'Rajdhani',sans-serif;
+  color:var(--ink-55);letter-spacing:.01em;font-weight:500;
+  margin-bottom:5px;display:block;
+}
+.ep-in,.ep-sel{
+  width:100%;padding:7px 10px;
+  background:var(--bg);
+  border:1px solid var(--ink-20);border-radius:var(--r-1);
+  color:var(--ink);
+  font-family:'Rajdhani',sans-serif;font-size:12px;
+  outline:none;
+  transition:border-color var(--t-fast) var(--ease),
+             box-shadow var(--t-fast) var(--ease);
+}
+.ep-in:hover,.ep-sel:hover{border-color:var(--ink-45)}
+.ep-in:focus,.ep-sel:focus{border-color:var(--ink);box-shadow:0 0 0 3px var(--ink-08)}
+.ep-txt{
+  width:100%;padding:7px 10px;min-height:52px;resize:vertical;
+  background:var(--bg);border:1px solid var(--ink-20);border-radius:var(--r-1);
+  color:var(--ink);font-family:'Rajdhani',sans-serif;font-size:11px;outline:none;
+  transition:border-color var(--t-fast) var(--ease),
+             box-shadow var(--t-fast) var(--ease);
+}
+.ep-txt:hover{border-color:var(--ink-45)}
+.ep-txt:focus{border-color:var(--ink);box-shadow:0 0 0 3px var(--ink-08)}
+.ep-rng{width:100%;accent-color:var(--ink);margin-top:2px}
+
+.sig-chips{display:flex;gap:6px;margin-top:3px}
+.sig-chip{
+  flex:1;padding:7px 10px;text-align:center;
+  border:1px solid var(--ink-20);border-radius:999px;
+  font-size:11px;font-family:'Rajdhani',sans-serif;font-weight:500;
+  letter-spacing:.01em;
+  color:var(--ink-55);cursor:pointer;
+  transition:background var(--t-fast) var(--ease),
+             border-color var(--t-fast) var(--ease),
+             color var(--t-fast) var(--ease),
+             transform var(--t-fast) var(--ease);
+}
+.sig-chip:hover{border-color:var(--ink-45);color:var(--ink);background:var(--ink-04)}
+.sig-chip:active{transform:scale(.96)}
+.sig-chip.on{background:var(--ink);color:var(--bg);border-color:var(--ink);box-shadow:var(--shadow-1)}
+
+/* Color swatch picker (AP properties) */
+.color-swatches{
+  display:grid;
+  grid-template-columns:repeat(8,1fr);
+  gap:5px;
+  margin-top:3px;
+}
+.color-swatch{
+  aspect-ratio:1;
+  border:1px solid var(--ink-20);
+  border-radius:50%;
+  cursor:pointer;
+  padding:0;
+  transition:transform var(--t-fast) var(--ease-spring),
+             box-shadow var(--t-fast) var(--ease),
+             border-color var(--t-fast) var(--ease);
+}
+.color-swatch:hover{transform:scale(1.15);border-color:var(--ink-45);box-shadow:var(--shadow-1)}
+.color-swatch:active{transform:scale(.95)}
+.color-swatch.on{
+  border:2px solid var(--ink);
+  box-shadow:0 0 0 2px var(--bg), 0 0 0 4px var(--ink), var(--shadow-1);
+}
+/* The "default" swatch shows a diagonal slash on a cream background to
+   communicate "no color override" rather than being a black circle */
+.color-swatch.color-default{
+  background:var(--bg);
+  position:relative;
+}
+.color-swatch.color-default::after{
+  content:'';position:absolute;inset:2px;
+  background:linear-gradient(to bottom right, transparent calc(50% - 0.5px), var(--ink) calc(50% - 0.5px), var(--ink) calc(50% + 0.5px), transparent calc(50% + 0.5px));
+  border-radius:50%;
+}
+
+/* ── Map area ─────────────────────────────────────────────────── */
+/* The map background gets a subtle inset shadow at the edges — feels recessed,
+   like the floor plan is sunk into the workspace canvas. */
+.map-area{
+  flex:1;position:relative;overflow:hidden;
+  background:var(--map-bg);
+  box-shadow:var(--shadow-inset);
+}
+#vp{width:100%;height:100%;position:relative;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;
+   transition:cursor var(--t-fast) var(--ease)}
+#vp.cur-cross{cursor:crosshair}
+#vp.cur-grabbing{cursor:grabbing}
+#cv{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}
+#cv.smooth-zoom{transition:transform var(--t-base) var(--ease)}
+#mi{display:block;user-select:none;pointer-events:none;-webkit-user-drag:none;
+   /* slightly desaturate user-uploaded floor plans so APs remain legible */
+   filter:grayscale(.15) brightness(1.02);opacity:.92;
+   /* Subtle drop shadow on the floor plan — feels like a printed photograph
+      laid on the workspace, not just an inline image. */
+   box-shadow:var(--shadow-1);
+   border-radius:2px;
+}
+#sl{position:absolute;top:0;left:0;overflow:visible}
+
+/* AP coverage rings ── encode signal via weight + dash */
+.ap-outer{fill:rgba(0,0,0,.04);stroke:var(--sig-strong);stroke-width:1.5}
+.ap-outer-m{fill:rgba(0,0,0,.035);stroke:var(--sig-medium);stroke-width:1.2;stroke-dasharray:6 3}
+.ap-outer-w{fill:rgba(0,0,0,.025);stroke:var(--sig-weak);stroke-width:1;stroke-dasharray:3 3}
+.ap-inner{fill:rgba(0,0,0,.05);stroke:var(--sig-strong);stroke-width:.8;opacity:.6}
+.ap-inner-m{fill:rgba(0,0,0,.04);stroke:var(--sig-medium);stroke-width:.8;opacity:.6}
+.ap-inner-w{fill:rgba(0,0,0,.03);stroke:var(--sig-weak);stroke-width:.8;opacity:.5}
+
+.ap-sel-outer{fill:rgba(0,0,0,.06);stroke:var(--ink);stroke-width:2.5}
+.ap-sel-inner{fill:rgba(0,0,0,.1);stroke:var(--ink);stroke-width:1.2;opacity:.7}
+
+.ap-dot{fill:var(--ink)}
+.ap-sel-dot{fill:var(--ink)}
+
+.ap-lbl{
+  fill:var(--ink);font-family:'Rajdhani',sans-serif;font-weight:700;
+  text-anchor:middle;dominant-baseline:central;
+  paint-order:stroke;stroke:var(--bg);stroke-width:3;
+  letter-spacing:.04em;
+}
+.ap-sub{
+  fill:var(--ink-70);font-family:'Share Tech Mono',monospace;
+  text-anchor:middle;dominant-baseline:central;
+  paint-order:stroke;stroke:var(--bg);stroke-width:2.5;
+  letter-spacing:.05em;
+}
+.ap-lbl-sel{
+  fill:var(--ink);font-family:'Rajdhani',sans-serif;font-weight:700;
+  text-anchor:middle;dominant-baseline:central;
+  paint-order:stroke;stroke:var(--bg);stroke-width:3;
+  letter-spacing:.04em;
+}
+.ap-sub-sel{
+  fill:var(--ink-85);font-family:'Share Tech Mono',monospace;
+  text-anchor:middle;dominant-baseline:central;
+  paint-order:stroke;stroke:var(--bg);stroke-width:2.5;
+  letter-spacing:.05em;
+}
+
+/* Resize handle */
+.rh-sel{fill:var(--bg);stroke:var(--ink);stroke-width:2;cursor:ew-resize}
+
+.ap-grp{cursor:move}
+
+/* Dead zones — black dashed */
+.dz-pulse{
+  fill:rgba(0,0,0,.06);
+  stroke:var(--ink);stroke-width:1.5;stroke-dasharray:4 3;
+}
+
+/* Switches/Routers */
+.sw-grp{cursor:move}
+
+/* Overlap zones */
+.ol-zone{fill:var(--ink);opacity:.12;stroke:var(--ink);stroke-width:.5;stroke-dasharray:2 2}
+
+/* Heatmap — grayscale */
+.heatmap-strong{fill:var(--ink);opacity:.22;pointer-events:none}
+.heatmap-medium{fill:var(--ink);opacity:.12;pointer-events:none}
+.heatmap-weak{fill:var(--ink);opacity:.05;pointer-events:none}
+
+/* Snap grid */
+.snap-grid line{stroke:var(--ink-08);stroke-width:.5;stroke-dasharray:2 2}
+
+/* Ruler — measurement overlay */
+.ruler-line{
+  stroke:var(--ink);stroke-width:1.5;fill:none;
+  stroke-dasharray:4 3;
+  pointer-events:none;
+}
+.ruler-pt{
+  fill:var(--bg);stroke:var(--ink);stroke-width:2;
+  pointer-events:none;
+}
+.ruler-tick{
+  stroke:var(--ink);stroke-width:1.5;
+  pointer-events:none;
+}
+.ruler-lbl-bg{
+  fill:var(--bg);stroke:var(--ink);stroke-width:1;
+  pointer-events:none;
+}
+.ruler-lbl{
+  fill:var(--ink);font-family:'Share Tech Mono',monospace;font-size:10px;
+  font-weight:700;letter-spacing:.08em;
+  text-anchor:middle;dominant-baseline:central;
+  pointer-events:none;
+}
+
+/* Walls */
+.wall-line{
+  stroke:var(--ink);fill:none;
+  stroke-linecap:round;
+}
+.wall-sel-hl{
+  stroke:var(--ink);stroke-width:8;opacity:.18;
+  stroke-linecap:round;fill:none;
+  pointer-events:none;
+}
+.wall-preview{
+  opacity:.55;stroke-dasharray:4 4;pointer-events:none;
+}
+.wall-lbl-bg{
+  fill:var(--bg);stroke:var(--ink);stroke-width:1;
+  pointer-events:none;
+}
+.wall-lbl{
+  fill:var(--ink);font-family:'Share Tech Mono',monospace;font-size:9px;
+  font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  text-anchor:middle;dominant-baseline:central;
+  pointer-events:none;
+}
+
+/* Panel readout rows (used for wall info display) */
+.ep-readout{
+  padding:6px 9px;
+  background:var(--surface);
+  border:1px solid var(--hair);border-radius:2px;
+  font-family:'Share Tech Mono',monospace;font-size:11px;
+  color:var(--ink);letter-spacing:.05em;
+}
+
+/* Map header/legend */
+.map-hdr{
+  position:absolute;top:14px;left:50%;transform:translateX(-50%);
+  display:flex;align-items:center;gap:18px;
+  padding:8px 18px;
+  background:var(--bg);
+  border:1px solid var(--ink);border-radius:2px;
+  pointer-events:none;z-index:5;
+}
+.mh-title{
+  font-size:11px;font-weight:700;color:var(--ink);
+  letter-spacing:.15em;text-transform:uppercase;font-family:'Rajdhani',sans-serif;
+}
+.mh-sub{
+  font-size:8px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink-55);letter-spacing:.1em;text-transform:uppercase;
+}
+.mh-meta{
+  font-size:8px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink-45);letter-spacing:.15em;text-transform:uppercase;
+}
+
+.map-leg{
+  position:absolute;bottom:14px;left:14px;
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:7px 14px;
+  background:var(--bg);border:1px solid var(--hair);border-radius:2px;
+  font-size:9px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink-55);letter-spacing:.1em;text-transform:uppercase;
+  z-index:5;
+}
+.leg-i{display:flex;align-items:center;gap:5px}
+.leg-dot{width:7px;height:7px;border-radius:50%;background:var(--ink)}
+.leg-ring{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--ink);background:rgba(0,0,0,.04)}
+.leg-ol{width:10px;height:10px;border-radius:50%;background:var(--ink);opacity:.25}
+.leg-brand{
+  margin-left:auto;font-size:8px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink-30);letter-spacing:.2em;font-weight:700;
+}
+
+/* ── Scale bar ─────────────────────────────────────────────────── */
+#scale-bar{
+  position:absolute;bottom:14px;right:14px;
+  display:flex;flex-direction:column;gap:4px;align-items:center;
+  background:var(--bg);padding:7px 11px;
+  border:1px solid var(--hair);border-radius:2px;z-index:5;
+}
+.sbar-line{height:3px;background:var(--ink);min-width:30px}
+.sbar-txt{
+  font-size:9px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink);letter-spacing:.1em;
+}
+
+/* Minimap */
+/* ── Context menu (right-click) ───────────────────────────────── */
+#ctx-menu{
+  position:fixed;z-index:500;
+  min-width:170px;
+  background:var(--bg);
+  border:1px solid var(--ink-12);
+  border-radius:var(--r-3);
+  box-shadow:var(--shadow-2);
+  padding:5px;
+  display:none;
+  font-family:'Rajdhani',sans-serif;
+  animation:mdl-pop var(--t-fast) var(--ease-spring);
+}
+#ctx-menu.vis{display:block}
+.ctx-item{
+  display:flex;align-items:center;gap:10px;
+  padding:7px 12px;
+  font-size:12px;letter-spacing:.01em;font-weight:500;
+  color:var(--ink);cursor:pointer;
+  border-radius:var(--r-1);
+  transition:background var(--t-fast) var(--ease);
+  user-select:none;
+}
+.ctx-item:hover{background:var(--ink);color:var(--bg)}
+.ctx-item.danger{color:var(--ink)}
+.ctx-item.danger:hover{background:var(--ink);color:var(--bg)}
+.ctx-item.disabled{opacity:.35;cursor:not-allowed;pointer-events:none}
+.ctx-sep{height:1px;background:var(--hair);margin:5px 4px}
+.ctx-key{
+  margin-left:auto;
+  font-family:'Share Tech Mono',monospace;font-size:9px;
+  color:var(--ink-45);letter-spacing:.1em;
+}
+.ctx-item:hover .ctx-key{color:rgba(255,255,255,.55)}
+#toast{
+  position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(28px);
+  background:var(--ink);color:var(--bg);
+  padding:11px 20px;border-radius:999px;
+  font-size:12px;font-family:'Rajdhani',sans-serif;font-weight:600;
+  letter-spacing:.04em;
+  opacity:0;
+  box-shadow:var(--shadow-2);
+  transition:opacity var(--t-slow) var(--ease),
+             transform var(--t-slow) var(--ease-spring);
+  pointer-events:none;z-index:100;
+}
+#toast.vis{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* ── Modal ────────────────────────────────────────────────────── */
+#mbg{
+  position:fixed;inset:0;background:rgba(0,0,0,.45);
+  display:none;align-items:center;justify-content:center;z-index:200;
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+  animation:mbg-fade var(--t-base) var(--ease);
+}
+#mbg.vis{display:flex}
+#mdl{
+  background:var(--bg);border:1px solid var(--ink-20);
+  border-radius:var(--r-4);padding:24px 26px;max-width:400px;width:90%;
+  box-shadow:var(--shadow-2);
+  animation:mdl-pop var(--t-base) var(--ease-spring);
+}
+@keyframes mbg-fade{from{opacity:0}to{opacity:1}}
+@keyframes mdl-pop{
+  from{opacity:0;transform:scale(.94) translateY(8px)}
+  to{opacity:1;transform:scale(1) translateY(0)}
+}
+.mdl-title{
+  font-size:14px;font-weight:700;color:var(--ink);
+  letter-spacing:.02em;margin-bottom:8px;font-family:'Rajdhani',sans-serif;
+}
+.mdl-body{
+  font-size:13px;color:var(--ink-70);line-height:1.55;margin-bottom:20px;
+}
+.mdl-actions{display:flex;gap:8px;justify-content:flex-end}
+
+/* ── Animations ───────────────────────────────────────────────── */
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes pulse{0%,100%{r:7;opacity:1}50%{r:10;opacity:.55}}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes dzs{from{transform:rotate(0deg)}to{transform:rotate(-360deg)}}
+/* ── Empty state ──────────────────────────────────────────────── */
+#empty-state{
+  position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:14px;pointer-events:none;z-index:3;
+  transition:opacity .25s;
+}
+#empty-state.hidden{opacity:0;pointer-events:none}
+.es-line{
+  font-size:14px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink);letter-spacing:.25em;text-transform:uppercase;font-weight:700;
+}
+.es-sub{
+  font-size:10px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink-55);letter-spacing:.15em;text-transform:uppercase;
+}
+.es-sub kbd,.es-sub strong{color:var(--ink);font-weight:700}
+.es-sub kbd{
+  display:inline-block;padding:1px 6px;margin:0 2px;
+  border:1px solid var(--ink);border-radius:2px;
+  font-family:'Share Tech Mono',monospace;font-size:9px;
+  background:var(--bg);
+}
+
+/* ── Help overlay (modal) ─────────────────────────────────────── */
+#mdl.help-modal{max-width:560px;width:92%}
+.help-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px 28px}
+.help-sec{display:flex;flex-direction:column;gap:6px}
+.help-h{
+  font-size:9px;font-family:'Share Tech Mono',monospace;
+  color:var(--ink);letter-spacing:.2em;text-transform:uppercase;font-weight:700;
+  padding-bottom:5px;border-bottom:1px solid var(--ink);margin-bottom:4px;
+}
+.help-row{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  font-size:11px;color:var(--ink-70);font-family:'Rajdhani',sans-serif;
+}
+.help-row span{text-align:right;letter-spacing:.02em}
+.help-row kbd{
+  display:inline-block;padding:1px 6px;
+  border:1px solid var(--ink);border-radius:2px;
+  font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--ink);
+  background:var(--bg);letter-spacing:.05em;
+}
+
+/* ── Floor rename (inline editable) ───────────────────────────── */
+.ftab.editing{
+  background:var(--bg);color:var(--ink);border-color:var(--ink);
+  outline:none;cursor:text;padding-left:8px;padding-right:8px;
+}
+
+/* ── Settings modal form ──────────────────────────────────────── */
+.settings-form{display:flex;flex-direction:column;gap:10px;min-width:380px}
+.settings-form .ep-row{display:flex;flex-direction:column;gap:4px}
+.settings-form .ep-lbl{font-size:10px;font-family:'Share Tech Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-55,rgba(0,0,0,.55))}
+.settings-form .ep-in{padding:7px 9px;font-size:13px;font-family:'Rajdhani',sans-serif;background:var(--bg);color:var(--ink);border:1px solid var(--ink);border-radius:2px}
+.settings-form .ep-hint{margin-top:6px;font-size:10px;font-family:'Share Tech Mono',monospace;color:var(--ink-55,rgba(0,0,0,.55));letter-spacing:.05em;line-height:1.5}

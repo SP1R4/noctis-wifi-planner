@@ -1,0 +1,52 @@
+/* Self-hosted fonts.
+ * Drop the WOFF2 binaries into ./fonts/ to enable. Falls back to system fonts
+ * if the file is missing, so the app remains readable even without the
+ * binaries committed to the repo.
+ *
+ * Suggested sources (all open licenses):
+ *   Rajdhani         — https://fonts.google.com/specimen/Rajdhani
+ *   Share Tech Mono  — https://fonts.google.com/specimen/Share+Tech+Mono
+ *
+ * Save them as:
+ *   fonts/rajdhani-400.woff2
+ *   fonts/rajdhani-500.woff2
+ *   fonts/rajdhani-600.woff2
+ *   fonts/rajdhani-700.woff2
+ *   fonts/share-tech-mono-400.woff2
+ */
+
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/rajdhani-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/rajdhani-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('fonts/rajdhani-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/rajdhani-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Share Tech Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/share-tech-mono-400.woff2') format('woff2');
+}
