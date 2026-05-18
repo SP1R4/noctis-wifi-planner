@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/SP1R4/noctis-wifi-planner/security/advisories/new
+    about: Please report security issues privately rather than as a public issue.
+  - name: Question or general discussion
+    url: https://github.com/SP1R4/noctis-wifi-planner/discussions
+    about: For "how do I…" or "is this the right tool for…" questions.

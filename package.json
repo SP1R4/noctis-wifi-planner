@@ -1,12 +1,42 @@
 {
   "name": "noctis-wifi-planner",
   "version": "1.0.0",
-  "description": "NOCTIS WiFi coverage planner — single-page app for placing access points, walls, and dead zones on floor plans.",
-  "private": true,
+  "description": "Single-page WiFi coverage planner — drop a floor plan, place access points, draw walls of different materials, and get a wall-aware ray-cast coverage simulation. Multi-floor, band-aware (2.4/5/6 GHz), HTML/PDF export.",
+  "private": false,
   "type": "module",
+  "license": "MIT",
+  "author": "SP1R4",
+  "homepage": "https://github.com/SP1R4/noctis-wifi-planner#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SP1R4/noctis-wifi-planner.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SP1R4/noctis-wifi-planner/issues"
+  },
+  "keywords": [
+    "wifi",
+    "wi-fi",
+    "coverage",
+    "planner",
+    "site-survey",
+    "rf",
+    "access-point",
+    "heatmap",
+    "ubiquiti",
+    "unifi",
+    "mikrotik",
+    "ray-cast",
+    "spa",
+    "vanilla-js"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "vite --port 5173",
     "build": "vite build",
+    "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest"
   },
