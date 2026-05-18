@@ -3,7 +3,7 @@
 
 import {WALL_MATERIALS} from './geometry.js';
 
-export const PROJECT_VERSION=5;
+export const PROJECT_VERSION=6;
 
 export const DEFAULT_SETTINGS={
   company:    'NOCTIS',
@@ -12,7 +12,11 @@ export const DEFAULT_SETTINGS={
   locale:     'en-GB',
   metaLine:   '',
   reportTitle:'Network Audit Report',
+  coverageOpacity: 100,   // 20–100 — scales the coverage fill opacity
+  lastModel:       'U6 Pro',  // remembers last placed/selected AP model
 };
+
+const DEFAULT_FLOOR_SCALE_M=100;
 
 // Upgrade a loaded project's data to the current schema in place.
 // Returns [migratedData, warnings[]]. Throws on irrecoverable shape errors.
@@ -22,6 +26,8 @@ export const DEFAULT_SETTINGS={
 //   v2 → v3: APs get channel + txPower defaults.
 //   v3 → v4: each floor gets a WALLS array.
 //   v4 → v5: floor images move to IndexedDB; settings live at the top level.
+//   v5 → v6: walls store fractional coords (fx1/fy1/fx2/fy2);
+//            scaleM moves from project-level to per-floor.
 //
 // This function is sync and pure — actual IndexedDB promotion of inline
 // images happens in app.js after migrateProject() returns.
@@ -34,13 +40,25 @@ export function migrateProject(data){
     warnings.push(`Project was saved with a newer version (v${v}) — some fields may be ignored.`);
   }
   if(data.settings&&typeof data.settings==='object'){
-    const s={};for(const k of Object.keys(DEFAULT_SETTINGS)){if(typeof data.settings[k]==='string')s[k]=data.settings[k];}
+    const s={};
+    for(const k of Object.keys(DEFAULT_SETTINGS)){
+      if(k==='coverageOpacity'){
+        if(typeof data.settings[k]==='number')s[k]=data.settings[k];
+      }else if(typeof data.settings[k]==='string'){
+        s[k]=data.settings[k];
+      }
+    }
     data.settings={...DEFAULT_SETTINGS,...s};
   }else{
     data.settings={...DEFAULT_SETTINGS};
   }
+  // Project-level scaleM is the legacy default (pre-v6). New projects use
+  // per-floor scaleM; old projects propagate the project-level value down.
+  const projectScaleM=typeof data.scaleM==='number'&&data.scaleM>0?data.scaleM:DEFAULT_FLOOR_SCALE_M;
   data.floors.forEach(f=>{
     if(!f.imgId)f.imgId='';
+    // Per-floor scaleM. Honour any existing per-floor value; otherwise inherit.
+    if(typeof f.scaleM!=='number'||f.scaleM<=0)f.scaleM=projectScaleM;
     (f.APS||[]).forEach(ap=>{
       if(!ap.model)ap.model='U6 Pro';
       if(typeof ap.locked!=='boolean')ap.locked=false;
@@ -56,8 +74,26 @@ export function migrateProject(data){
       if(typeof sw.size!=='number'||sw.size<=0)sw.size=22;
     });
     if(!Array.isArray(f.WALLS))f.WALLS=[];
-    f.WALLS.forEach(w=>{if(!w.material||!WALL_MATERIALS[w.material])w.material='drywall';});
+    f.WALLS.forEach(w=>{
+      if(!w.material||!WALL_MATERIALS[w.material])w.material='drywall';
+      // v5→v6: convert absolute pixel walls to fractional. The image dimensions
+      // aren't known here (this module is DOM-free), but the floor knows its
+      // own historical image size if we recorded it. As a safe fallback we
+      // convert against `f.imgW/imgH` if present; otherwise we leave the
+      // legacy x1/y1/x2/y2 in place and let `wallToPx` in geometry.js handle
+      // it for rendering. New walls always go through the fractional path.
+      if(!Number.isFinite(w.fx1)||!Number.isFinite(w.fy1)||!Number.isFinite(w.fx2)||!Number.isFinite(w.fy2)){
+        if(Number.isFinite(w.x1)&&Number.isFinite(w.y1)&&Number.isFinite(w.x2)&&Number.isFinite(w.y2)
+          &&Number.isFinite(f.imgW)&&Number.isFinite(f.imgH)&&f.imgW>0&&f.imgH>0){
+          w.fx1=w.x1/f.imgW;w.fy1=w.y1/f.imgH;
+          w.fx2=w.x2/f.imgW;w.fy2=w.y2/f.imgH;
+          delete w.x1;delete w.y1;delete w.x2;delete w.y2;
+        }
+      }
+    });
   });
+  // Drop the legacy project-level scaleM now that each floor carries its own.
+  delete data.scaleM;
   data.version=PROJECT_VERSION;
   return [data,warnings];
 }

@@ -1,288 +1,52 @@
-// Pure helpers (geometry + migrate) live in files/src/*.js so they can be
-// unit-tested under vitest without the DOM. The local copies further down in
-// this file are the runtime source of truth — keep them in sync with the
-// modules. We don't import the modules here so the app still runs when the
-// user opens index.html directly via file:// (ES modules require HTTP/CORS).
+// Single source of truth: pure geometry + migration helpers live in
+// files/src/*.js so they can be unit-tested under vitest without the DOM.
+// app.js imports them as ES modules; Vite handles bundling for production.
+import {
+  WALL_MATERIALS,
+  bandLossMultiplier,
+  wallToPx,
+  computeCoveragePath as _computeCoveragePath,
+  sampleFloorCoverage as _sampleFloorCoverage,
+} from './src/geometry.js';
+import {
+  migrateProject,
+  syncNidFromFloors as _syncNidFromFloors,
+  nextNameSuffix,
+  PROJECT_VERSION,
+  DEFAULT_SETTINGS,
+} from './src/migrate.js';
+import {
+  AP_MODEL_GROUPS, MODELS, AP_RANGE_M,
+  SW_MODEL_GROUPS, SW_MODELS,
+  WALL_MATERIAL_KEYS, AP_COLORS,
+} from './src/constants.js';
+import {
+  idbPutImage, idbGetImage, idbDeleteImage,
+  newImgId as _newImgId,
+  imgCache as _imgCache,
+  resolveFloorImage,
+} from './src/imageStore.js';
 
-// ═══ CONSTANTS ════════════════════════════════════
-// AP models grouped by manufacturer. Rendered as <optgroup> in the model dropdown.
-const AP_MODEL_GROUPS=[
-  {label:'Ubiquiti UniFi — WiFi 6', models:[
-    'U6 Lite','U6 Pro','U6 Plus','U6 Mesh','U6 Long-Range',
-    'U6 Enterprise','U6 Enterprise In-Wall','U6 Extender',
-    'U6 IW','U6+',
-  ]},
-  {label:'Ubiquiti UniFi — WiFi 7', models:[
-    'U7 Pro','U7 Pro Max','U7 Pro Wall','U7 Pro XG',
-    'U7 Outdoor','U7 Lite','U7 IW','U7 In-Wall',
-    'E7','U7 Enterprise','U7 Enterprise Campus',
-  ]},
-  {label:'Ubiquiti UniFi — WiFi 5 (legacy)', models:[
-    'UAP-AC-Pro','UAP-AC-Lite','UAP-AC-Mesh','UAP-AC-Mesh-Pro',
-    'UAP-AC-HD','UAP-AC-SHD','UAP-nanoHD',
-    'UAP-IW-HD','UAP-IW','UAP-BeaconHD',
-    'UAP-AC-M','UAP-AC-M-Pro',
-  ]},
-  {label:'MikroTik — WiFi 6 / ax', models:[
-    'cAP ax','cAP-XL ax','hAP ax²','hAP ax³','hAP ax lite',
-    'wAP ax','wAP ax R','Chateau ax',
-  ]},
-  {label:'MikroTik — WiFi 5 / ac', models:[
-    'cAP ac','cAP ac XL','hAP ac','hAP ac²','hAP ac³','hAP ac lite',
-    'wAP ac','wAP-60G','mAP','mAP lite','Audience',
-    'RBwAPGR-5HacD2HnD','Chateau LTE6 ac',
-  ]},
-  {label:'Other', models:['Custom/Other']},
-];
-// Flat list for code that just wants the names
-const MODELS=AP_MODEL_GROUPS.flatMap(g=>g.models);
-
-// Typical coverage radius in metres (conservative indoor estimate) for each model.
-// Used as a sensible default when placing an AP and when the user changes model.
-// Converted to pixel radius at place-time using current scaleM.
-const AP_RANGE_M={
-  // UniFi WiFi 6
-  'U6 Lite':               18,
-  'U6 Pro':                25,
-  'U6 Plus':               22,
-  'U6 Mesh':               20,
-  'U6 Long-Range':         40,
-  'U6 Enterprise':         30,
-  'U6 Enterprise In-Wall': 20,
-  'U6 Extender':           15,
-  'U6 IW':                 18,
-  'U6+':                   20,
-  // UniFi WiFi 7
-  'U7 Pro':                28,
-  'U7 Pro Max':            32,
-  'U7 Pro Wall':           22,
-  'U7 Pro XG':             28,
-  'U7 Outdoor':            50,
-  'U7 Lite':               20,
-  'U7 IW':                 20,
-  'U7 In-Wall':            20,
-  'E7':                    32,
-  'U7 Enterprise':         35,
-  'U7 Enterprise Campus':  40,
-  // UniFi WiFi 5
-  'UAP-AC-Pro':            22,
-  'UAP-AC-Lite':           16,
-  'UAP-AC-Mesh':           18,
-  'UAP-AC-Mesh-Pro':       30,
-  'UAP-AC-HD':             30,
-  'UAP-AC-SHD':            30,
-  'UAP-nanoHD':            20,
-  'UAP-IW-HD':             18,
-  'UAP-IW':                15,
-  'UAP-BeaconHD':          15,
-  'UAP-AC-M':              22,
-  'UAP-AC-M-Pro':          30,
-  // MikroTik WiFi 6 / ax
-  'cAP ax':                28,
-  'cAP-XL ax':              35,
-  'hAP ax²':               20,
-  'hAP ax³':               30,
-  'hAP ax lite':           15,
-  'wAP ax':                45,
-  'wAP ax R':              40,
-  'Chateau ax':            25,
-  // MikroTik WiFi 5 / ac
-  'cAP ac':                22,
-  'cAP ac XL':             28,
-  'hAP ac':                18,
-  'hAP ac²':               18,
-  'hAP ac³':               22,
-  'hAP ac lite':           14,
-  'wAP ac':                35,
-  'wAP-60G':               20,
-  'mAP':                   12,
-  'mAP lite':              10,
-  'Audience':              22,
-  'RBwAPGR-5HacD2HnD':     30,
-  'Chateau LTE6 ac':       22,
-  // Fallback
-  'Custom/Other':          25,
-};
-
-// Switch / router models — also grouped. Same structure so the dropdown code
-// can render either list identically.
-const SW_MODEL_GROUPS=[
-  {label:'Ubiquiti UniFi — Switches', models:[
-    // Standard UniFi switches
-    'USW-Flex-Mini','USW-Flex','USW-Flex-Utility',
-    'USW-Lite-8-PoE','USW-Lite-16-PoE',
-    'USW-16','USW-16-PoE',
-    'USW-24','USW-24-PoE',
-    'USW-48','USW-48-PoE',
-    // Pro line
-    'USW-Pro-8-PoE','USW-Pro-24','USW-Pro-24-PoE',
-    'USW-Pro-48','USW-Pro-48-PoE',
-    'USW-Pro-Max-16','USW-Pro-Max-24','USW-Pro-Max-48',
-    'USW-Pro-Max-24-PoE','USW-Pro-Max-48-PoE',
-    // Aggregation / 10G
-    'USW-Aggregation','USW-Pro-Aggregation',
-    'USW-EnterpriseXG-24','USW-Enterprise-24-PoE','USW-Enterprise-48-PoE','USW-Enterprise-8-PoE',
-    // Industrial / outdoor
-    'USW-Industrial','USW-Mission-Critical',
-  ]},
-  {label:'Ubiquiti UniFi — Routers & Gateways', models:[
-    'UDM','UDM-Pro','UDM-SE','UDM-Pro-Max',
-    'UXG-Lite','UXG-Pro','UXG-Max','UXG-Enterprise',
-    'UCG-Fiber','UCG-Max','UCG-Ultra',
-    'USG','USG-Pro-4','USG-3P',
-    'Dream Router','Dream Router 7','Dream Machine',
-    'Cloud Gateway Fiber','Cloud Gateway Max','Cloud Gateway Ultra',
-  ]},
-  {label:'MikroTik — Routers (Home / SMB)', models:[
-    'hEX (RB750Gr4)','hEX S (RB760iGS)','hEX refresh',
-    'hAP mini','hAP lite','hAP','hAP ac lite','hAP ac²','hAP ac³',
-    'hAP ax lite','hAP ax²','hAP ax³',
-    'RB4011iGS+RM','RB4011iGS+5HacQ2HnD-IN',
-    'RB5009UG+S+IN','RB5009UPr+S+IN','RB5009UG+S+IN PoE',
-    'RB3011UiAS-RM','RB2011UiAS-RM','RB2011iL-RM','RB2011iL-IN',
-  ]},
-  {label:'MikroTik — Routers (ISP / Enterprise)', models:[
-    'L009UiGS-RM','L009UiGS-2HaxD-IN','L009UiGS-RM+Rack',
-    'CCR1009-7G-1C-1S+','CCR1016-12G','CCR1036-12G-4S','CCR1036-8G-2S+',
-    'CCR1072-1G-8S+',
-    'CCR2004-1G-12S+2XS','CCR2004-16G-2S+','CCR2004-1G-2XS-PCIe',
-    'CCR2116-12G-4S+','CCR2216-1G-12XS-2XQ',
-  ]},
-  {label:'MikroTik — Switches (Smart)', models:[
-    'CSS326-24G-2S+RM','CSS610-8G-2S+IN','CSS318-16G-2S+IN','CSS318-16P-4S+RM',
-  ]},
-  {label:'MikroTik — Switches (CRS3xx — Managed)', models:[
-    'CRS305-1G-4S+IN',
-    'CRS309-1G-8S+IN','CRS309-1G-8S+IN Rackmount',
-    'CRS310-1G-5S-4S+IN','CRS310-1G-5S-4S+OUT','CRS310-8G+2S+IN',
-    'CRS312-4C+8XG-RM',
-    'CRS317-1G-16S+RM',
-    'CRS318-1Fi-15Fr-2S','CRS318-16P-2S+OUT',
-    'CRS326-24G-2S+RM','CRS326-24G-2S+IN','CRS326-4C+20G+2Q+RM','CRS326-24S+2Q+RM',
-    'CRS328-24P-4S+RM','CRS328-4C-20S-4S+RM',
-    'CRS354-48G-4S+2Q+RM','CRS354-48P-4S+2Q+RM',
-  ]},
-  {label:'MikroTik — Switches (CRS5xx — High End)', models:[
-    'CRS504-4XQ-IN','CRS510-8XS-2XQ-IN','CRS518-16XS-2XQ-RM','CRS520-4XS-16XQ-RM',
-  ]},
-  {label:'Other', models:['Custom/Other']},
-];
-const SW_MODELS=SW_MODEL_GROUPS.flatMap(g=>g.models);
-
-// Wall materials. `loss` is approximate signal attenuation in dB per traversal
-// (for a typical 5 GHz signal through an interior wall of that construction).
-// `strokeWidth` is the on-map visual weight — heavier materials render thicker.
-const WALL_MATERIALS={
-  drywall:  {label:'Drywall',  loss:3,  strokeWidth:1.2},
-  wood:     {label:'Wood',     loss:5,  strokeWidth:1.8},
-  glass:    {label:'Glass',    loss:6,  strokeWidth:1,   dash:'2 2'},
-  brick:    {label:'Brick',    loss:10, strokeWidth:2.4},
-  concrete: {label:'Concrete', loss:15, strokeWidth:3.5},
-};
-const WALL_MATERIAL_KEYS=Object.keys(WALL_MATERIALS);
-// Convert "N dB traversed" → "radius shrinks by this factor".
-// A rough heuristic: each 3 dB of loss ≈ halves the usable range in that direction.
-// So attenuation factor = (0.5)^(lossDb / 3). We floor it at 0.05 so walls can't
-// completely zero-out coverage (a thick bunker wouldn't be 0, just very small).
-function attenuationFactor(totalLossDb){
-  return Math.max(0.05, Math.pow(0.5, totalLossDb/3));
-}
-
-// Curated AP color palette — chosen to read clearly on the cream NOCTIS canvas.
-// The empty string key means "use default ink (#000)" — this is the default for
-// APs with no explicit color. Users can still edit an AP's `color` to any hex.
-const AP_COLORS=[
-  {value:'',         label:'Default'},
-  {value:'#c0382b',  label:'Red'},
-  {value:'#d68910',  label:'Amber'},
-  {value:'#1e7d3c',  label:'Green'},
-  {value:'#1565c0',  label:'Blue'},
-  {value:'#6a1b9a',  label:'Purple'},
-  {value:'#00838f',  label:'Teal'},
-  {value:'#6d4c41',  label:'Brown'},
-];
+// AP_MODEL_GROUPS, AP_RANGE_M, SW_MODEL_GROUPS, AP_COLORS, WALL_MATERIAL_KEYS
+// all live in ./src/constants.js (single source of truth for the catalogs).
 
 // ═══ COVERAGE GEOMETRY (wall-clipped) ═════════════
 // For each AP we cast N rays outward. For each ray we find how many walls
-// it crosses and sum the dB loss, then shrink the ray's max length by the
-// attenuation factor. The resulting polygon is the coverage shape. We cache
-// the polygon's SVG path on the AP object and invalidate it only when walls
-// or AP position/radius change.
-const COVERAGE_RAYS=72;   // one ray every 5°. Compromise between smoothness and CPU.
+// it crosses and sum the dB loss (scaled by the AP's band factor), then
+// shrink the ray's max length by the attenuation factor. We cache the
+// polygon's SVG path on the AP object and invalidate it only when walls or
+// AP position/radius change. The actual ray-cast lives in geometry.js.
+const COVERAGE_RAYS=72;   // one ray every 5°.
 
-// Segment-segment intersection. Returns the parametric t along ray (from ap
-// out to direction*r) where it hits the wall, or null if no hit within 0..1.
-function rayWallIntersect(ax,ay, bx,by, wx1,wy1, wx2,wy2){
-  const rdx=bx-ax, rdy=by-ay;
-  const sdx=wx2-wx1, sdy=wy2-wy1;
-  const denom=rdx*sdy - rdy*sdx;
-  if(Math.abs(denom)<1e-9)return null;  // parallel
-  const t=((wx1-ax)*sdy - (wy1-ay)*sdx)/denom;
-  const u=((wx1-ax)*rdy - (wy1-ay)*rdx)/denom;
-  if(t<0||t>1||u<0||u>1)return null;
-  return t;
-}
-
-// Compute the polygon of reachable points around an AP considering walls.
-// Returns an SVG path "d" string. If no walls, returns a circle-approximation
-// (which renders identically to a <circle>).
 function computeCoveragePath(ap){
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  // If the image hasn't finished loading (or we're rendering off-screen for export
-  // before the image is ready), all AP coords would collapse to near-origin because
-  // fx/fy are fractions. Return an empty path rather than drawing a bogus circle
-  // stack at (0,0).
-  if(!w||!h){return 'M0,0Z';}
-  // Also guard against invalid AP data — occasionally a migration might leave
-  // an AP without valid fx/fy/r. Skip these rather than NaN-propagate.
-  if(!Number.isFinite(ap.fx)||!Number.isFinite(ap.fy)||!Number.isFinite(ap.r)||ap.r<=0){return 'M0,0Z';}
-  const cx=ap.fx*w, cy=ap.fy*h;
-  const r=ap.r;
-  const walls=WALLS();
-  const pts=[];
-  for(let i=0;i<COVERAGE_RAYS;i++){
-    const angle=(i/COVERAGE_RAYS)*Math.PI*2;
-    const dx=Math.cos(angle), dy=Math.sin(angle);
-    const ex=cx+dx*r, ey=cy+dy*r;
-    // Walk along the ray, accumulating loss from each wall crossed.
-    // Each hit's t gives us the fraction of r at which the wall is; we
-    // collect all hits, sort by t, then compute cumulative loss & attenuated reach.
-    const hits=[];
-    for(const wall of walls){
-      const t=rayWallIntersect(cx,cy,ex,ey,wall.x1,wall.y1,wall.x2,wall.y2);
-      if(t!==null){
-        const mat=WALL_MATERIALS[wall.material]||WALL_MATERIALS.drywall;
-        hits.push({t,loss:mat.loss});
-      }
-    }
-    hits.sort((a,b)=>a.t-b.t);
-    // Find the reach: ray continues until cumulative attenuation makes the
-    // remaining range too small to extend past the next hit.
-    let reachT=1;  // default: full range
-    let cumLoss=0;
-    for(const hit of hits){
-      // The ray has already traveled hit.t*r metres-in-image before hitting this wall.
-      // After the wall, its effective max range becomes r*attenuationFactor(cumLoss+hit.loss).
-      // So it can continue to min(1, hit.t + (1-hit.t) * attenuationFactor(newLoss))
-      //                      in units where 1 = r.
-      cumLoss+=hit.loss;
-      const atten=attenuationFactor(cumLoss);
-      // New reach from AP = hit position + remaining * atten
-      const newReach=hit.t + (1-hit.t)*atten;
-      if(newReach<reachT)reachT=newReach;
-      // If we're already below hit.t we've stopped before this wall anyway
-      if(reachT<=hit.t)break;
-    }
-    pts.push({x:cx+dx*r*reachT, y:cy+dy*r*reachT});
-  }
-  // Build an SVG path from the polygon points. Close it.
-  return 'M'+pts.map(p=>`${p.x.toFixed(1)},${p.y.toFixed(1)}`).join('L')+'Z';
+  return _computeCoveragePath(ap,w,h,WALLS(),{rays:COVERAGE_RAYS,bandFactor:bandLossMultiplier(ap.freq)});
 }
 
 // Cache lookups — both outer (full r) and inner (r * 0.54) coverage paths are
 // memoized on the AP. Cache fields are prefixed `_` so the save/autosave
 // stripper drops them, keeping JSON small and avoiding stale cache resurrection.
-function _cacheKey(ap,r){return `${ap.fx},${ap.fy},${r},${WALLS().length},${_wallsCacheKey}`;}
+function _cacheKey(ap,r){return `${ap.fx},${ap.fy},${r},${ap.freq||''},${WALLS().length},${_wallsCacheKey}`;}
 function getCoveragePath(ap){
   const key=_cacheKey(ap,ap.r);
   if(ap._coveragePath&&ap._coverageFor===key)return ap._coveragePath;
@@ -295,7 +59,7 @@ function getInnerCoveragePath(ap){
   const innerR=ap.r*.54;
   const key=_cacheKey(ap,innerR);
   if(ap._innerCoveragePath&&ap._innerCoverageFor===key)return ap._innerCoveragePath;
-  const path=computeCoveragePath({fx:ap.fx,fy:ap.fy,r:innerR});
+  const path=computeCoveragePath({fx:ap.fx,fy:ap.fy,r:innerR,freq:ap.freq});
   ap._innerCoveragePath=path;
   ap._innerCoverageFor=key;
   return path;
@@ -303,7 +67,7 @@ function getInnerCoveragePath(ap){
 let _wallsCacheKey=0;
 function invalidateCoverageCache(){_wallsCacheKey++;}
 
-// Convert metres → pixels using current scale (scaleM = metres per 100 px)
+// Convert metres → pixels using current floor's scale (metres per 100 px)
 function rangeMToPx(m){return Math.round(m*100/(scaleM||100));}
 
 // HTML-escape for safely interpolating user-controlled strings into templates.
@@ -371,88 +135,16 @@ const HINTS={
   wall:'Click two points to draw a wall · Shift for 45° · Esc to cancel'
 };
 
-// ═══ IMAGE STORE (IndexedDB) ══════════════════════
-// Floor-plan images can be megabytes. Putting them inside FLOORS would mean
-// every save/autosave JSON contains the full image as base64, blowing past
-// the 5 MB localStorage quota almost immediately. Instead the floor object
-// only carries `imgId` + `imgName`; the actual data URL lives in IndexedDB.
-//
-// Saved project files bundle the images alongside the JSON so the project is
-// still self-contained when shared. Older save files (with `img` data URLs
-// inline) are migrated on load — see migrateProject.
-const IDB_NAME='noctis_wifi';
-const IDB_STORE='images';
-const IDB_VERSION=1;
-let _idbPromise=null;
-function _openIdb(){
-  if(_idbPromise)return _idbPromise;
-  _idbPromise=new Promise((resolve,reject)=>{
-    if(typeof indexedDB==='undefined'){reject(new Error('No IndexedDB'));return;}
-    const req=indexedDB.open(IDB_NAME,IDB_VERSION);
-    req.onupgradeneeded=()=>{
-      const db=req.result;
-      if(!db.objectStoreNames.contains(IDB_STORE))db.createObjectStore(IDB_STORE);
-    };
-    req.onsuccess=()=>resolve(req.result);
-    req.onerror=()=>reject(req.error);
-  });
-  return _idbPromise;
-}
-async function idbPutImage(id,dataUrl){
-  const db=await _openIdb();
-  return new Promise((resolve,reject)=>{
-    const tx=db.transaction(IDB_STORE,'readwrite');
-    tx.objectStore(IDB_STORE).put(dataUrl,id);
-    tx.oncomplete=()=>resolve();
-    tx.onerror=()=>reject(tx.error);
-  });
-}
-async function idbGetImage(id){
-  const db=await _openIdb();
-  return new Promise((resolve,reject)=>{
-    const tx=db.transaction(IDB_STORE,'readonly');
-    const r=tx.objectStore(IDB_STORE).get(id);
-    r.onsuccess=()=>resolve(r.result||null);
-    r.onerror=()=>reject(r.error);
-  });
-}
-async function idbDeleteImage(id){
-  if(!id)return;
-  const db=await _openIdb();
-  return new Promise((resolve,reject)=>{
-    const tx=db.transaction(IDB_STORE,'readwrite');
-    tx.objectStore(IDB_STORE).delete(id);
-    tx.oncomplete=()=>resolve();
-    tx.onerror=()=>reject(tx.error);
-  });
-}
-function _newImgId(){return 'img_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);}
-// In-memory cache so multiple loads of the same image don't re-hit IDB.
-const _imgCache=new Map();
-async function resolveFloorImage(f){
-  if(!f.imgId)return '';
-  if(_imgCache.has(f.imgId))return _imgCache.get(f.imgId);
-  const data=await idbGetImage(f.imgId);
-  if(data)_imgCache.set(f.imgId,data);
-  return data||'';
-}
+// Image store (IndexedDB-backed) lives in ./src/imageStore.js. We import
+// idbPutImage / idbGetImage / idbDeleteImage / newImgId / imgCache /
+// resolveFloorImage at the top of this file.
 
 // ═══ PROJECT SETTINGS ═════════════════════════════
-// Per-project branding/locale surfaced in HTML & PDF exports. Editable via the
-// Settings modal (gear button), persisted on the project file. Defaults are
-// the planner's own brand (NOCTIS); each project can override.
-const DEFAULT_SETTINGS={
-  company:    'NOCTIS',
-  tagline:    'Network Planning',
-  contact:    '',
-  locale:     'en-GB',  // affects toLocaleDateString in exports
-  metaLine:   '',       // freeform top-line under the cover, e.g. "Athens HQ"
-  reportTitle:'Network Audit Report',
-};
+// DEFAULT_SETTINGS imported from ./src/migrate.js (single source of truth).
 let SETTINGS={...DEFAULT_SETTINGS};
 
 // ═══ STATE ════════════════════════════════════════
-let FLOORS=[{id:'f1',name:'Floor 1',img:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[]}];
+let FLOORS=[{id:'f1',name:'Floor 1',img:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],scaleM:100}];
 let curFloor=0;
 let nid=1;
 let mode='add';
@@ -461,7 +153,12 @@ let showOL=false,showHeat=false,showGrid=false;
 let showCoverage=true;  // coverage circles/polygons. Toggle to declutter the map.
 let pres=false;
 let pendDel=null,modalCB=null;
-let scaleM=100; // metres per 100px
+// scaleM is a mirror of F().scaleM kept in sync for fast read access.
+// Reads happen on every render; writes go through setScaleM() which updates
+// both the global and the current floor.
+let scaleM=100; // metres per 100px (mirror of current floor's scaleM)
+function syncScaleFromFloor(){scaleM=F().scaleM||100;const el=document.getElementById('scale-m');if(el)el.value=scaleM;}
+function setScaleM(v){scaleM=Math.max(1,parseFloat(v)||100);F().scaleM=scaleM;}
 // Undo/redo
 let undoStack=[],redoStack=[];
 // Zoom/pan
@@ -499,6 +196,7 @@ const olLayer=document.getElementById('ol-layer'),heatLayer=document.getElementB
 const gridLayer=document.getElementById('grid-layer');
 const rulerLayer=document.getElementById('ruler-layer');
 const wallLayer=document.getElementById('wall-layer');
+const chOverlapLayer=document.getElementById('ch-overlap-layer');
 // Minimap was removed. These references are kept as nulls so the rest of the
 // codebase doesn't need changes; renderMM is a no-op below, and mmImg.src
 // assignments are guarded with `if(mmImg)` checks throughout.
@@ -591,10 +289,13 @@ function startFloorRename(nameEl,floor){
     else if(e.key==='Escape'){e.preventDefault();nameEl.removeEventListener('keydown',onKey);nameEl.removeEventListener('blur',commit);cancel();}
   });
 }
-function switchFloor(i){curFloor=i;selId=null;selType=null;loadFloorImage();renderFloorTabs();render();renderList();renderRP();}
+function switchFloor(i){curFloor=i;selId=null;selType=null;syncScaleFromFloor();loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();}
 function addFloor(){
   const defaultName='Floor '+(FLOORS.length+1);
-  FLOORS.push({id:'f'+(++nid),name:defaultName,img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[]});
+  // New floors inherit the current floor's scale as a sensible default — the
+  // user can override per-floor afterwards.
+  const inheritedScale=F()?.scaleM||100;
+  FLOORS.push({id:'f'+(++nid),name:defaultName,img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],scaleM:inheritedScale});
   switchFloor(FLOORS.length-1);
   toast('Floor added');
   // Immediately enter rename mode on the new tab so user can pick a real name
@@ -669,56 +370,8 @@ function uploadMap(input){
 // onload handled in loadFloorImage()
 
 // ═══ SAVE / LOAD PROJECT ══════════════════════════
-// ═══ PROJECT VERSIONING ═══════════════════════════
-const PROJECT_VERSION=5;  // bump this when FLOORS/APS schema changes in a breaking way
-
-// Upgrade a loaded project's data to the current schema. Returns [migratedData, warnings[]].
-// v4 → v5: floor images move from inline `img` data URLs to IndexedDB, keyed
-// by `imgId`. Inline images stay in `img` here — applyLoadedProject() promotes
-// them into IDB asynchronously after load (so the migrate function itself
-// stays sync and pure for unit testing).
-function migrateProject(data){
-  const warnings=[];
-  if(!data||typeof data!=='object'){throw new Error('Not a NOCTIS project file');}
-  if(!Array.isArray(data.floors)){throw new Error('Missing floors');}
-  const v=typeof data.version==='number'?data.version:1;
-  if(v>PROJECT_VERSION){
-    warnings.push(`Project was saved with a newer version (v${v}) — some fields may be ignored.`);
-  }
-  // v1 → v2: ensure every AP has a model, every item has a locked flag.
-  // v2 → v3: APs get channel + txPower defaults.
-  // v3 → v4: each floor gets a WALLS array.
-  // v4 → v5: floor images move to IndexedDB; inline data URL kept until promoted.
-  // (Note: prior versions had a cables feature — that data is ignored if present in old project files.)
-  if(data.settings&&typeof data.settings==='object'){
-    // Pull through known keys only — don't trust unknown values.
-    const s={};for(const k of Object.keys(DEFAULT_SETTINGS)){if(typeof data.settings[k]==='string')s[k]=data.settings[k];}
-    data.settings={...DEFAULT_SETTINGS,...s};
-  }else{
-    data.settings={...DEFAULT_SETTINGS};
-  }
-  data.floors.forEach(f=>{
-    if(!f.imgId)f.imgId='';
-    (f.APS||[]).forEach(ap=>{
-      if(!ap.model)ap.model='U6 Pro';
-      if(typeof ap.locked!=='boolean')ap.locked=false;
-      if(!ap.sig)ap.sig='strong';
-      if(typeof ap.r!=='number'||ap.r<=0)ap.r=80;
-      if(!ap.channel)ap.channel='auto';
-      if(!ap.txPower)ap.txPower='auto';
-      if(typeof ap.color!=='string')ap.color='';
-    });
-    (f.DZS||[]).forEach(dz=>{if(typeof dz.locked!=='boolean')dz.locked=false;if(typeof dz.r!=='number')dz.r=40;});
-    (f.SWS||[]).forEach(sw=>{
-      if(typeof sw.locked!=='boolean')sw.locked=false;
-      if(typeof sw.size!=='number'||sw.size<=0)sw.size=22;
-    });
-    if(!Array.isArray(f.WALLS))f.WALLS=[];
-    f.WALLS.forEach(w=>{if(!w.material||!WALL_MATERIALS[w.material])w.material='drywall';});
-  });
-  data.version=PROJECT_VERSION;
-  return [data,warnings];
-}
+// PROJECT_VERSION, migrateProject, syncNidFromFloors, nextNameSuffix all
+// imported from ./src/migrate.js. See top of file.
 
 // Strip per-item cache fields (`_coveragePath`, `_coverageFor`, etc.) so saved
 // JSON stays small and never round-trips stale geometry into a future load.
@@ -734,7 +387,8 @@ async function saveProject(){
     }
     return out;
   }));
-  const data={version:PROJECT_VERSION,settings:SETTINGS,floors:floorsForExport,scaleM,savedAt:new Date().toISOString()};
+  // scaleM is now stored per-floor; project-level field omitted.
+  const data={version:PROJECT_VERSION,settings:SETTINGS,floors:floorsForExport,savedAt:new Date().toISOString()};
   const blob=new Blob([JSON.stringify(data,_stripCacheReplacer,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
   a.download='noctis_project.json';a.click();
@@ -753,9 +407,9 @@ function newProject(){
     // Mutate FLOORS in place rather than reassigning the binding — this keeps
     // any existing references (tests, inspector debugging, closures) valid.
     FLOORS.length=0;
-    FLOORS.push({id:'f1',name:'Floor 1',img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[]});
+    FLOORS.push({id:'f1',name:'Floor 1',img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],scaleM:100});
     curFloor=0;selId=null;selType=null;nid=1;
-    scaleM=100;document.getElementById('scale-m').value=scaleM;
+    syncScaleFromFloor();
     try{localStorage.removeItem(AUTOSAVE_KEY);}catch(_){}
     for(const id of oldIds){idbDeleteImage(id).catch(()=>{});}
     lastAutosavePayload='';
@@ -776,10 +430,10 @@ function loadProject(input){
     try{
       const raw=JSON.parse(e.target.result);
       const [data,warnings]=migrateProject(raw);
-      FLOORS=data.floors;scaleM=data.scaleM||100;
+      FLOORS=data.floors;
       SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
-      document.getElementById('scale-m').value=scaleM;
       curFloor=0;selId=null;selType=null;
+      syncScaleFromFloor();
       syncNidFromFloors();
       // Promote any inline `img` data URL into IDB so subsequent autosaves
       // stay tiny. Done in parallel; failures fall back to the inline image.
@@ -815,37 +469,7 @@ function applySettingsToBrand(){
 // has the same internal id).
 //
 // Run this whenever FLOORS is loaded or restored from outside.
-function syncNidFromFloors(){
-  let maxNum=0;
-  for(const f of FLOORS){
-    for(const list of [f.APS,f.DZS,f.SWS,f.WALLS]){
-      if(!Array.isArray(list))continue;
-      for(const item of list){
-        if(!item.id)continue;
-        // IDs look like "ap42", "dz3", "sw7", "cb12", "w19" — strip leading
-        // letters and parse the trailing number.
-        const m=String(item.id).match(/(\d+)$/);
-        if(m){
-          const n=parseInt(m[1],10);
-          if(n>maxNum)maxNum=n;
-        }
-      }
-    }
-  }
-  nid=maxNum+1;
-}
-
-// Pick the next available numeric suffix for an AP/DZ/SW name. Walks the
-// existing names, finds the highest "AP-NN" / "Dead Zone N" / "SW-N" number,
-// returns the next one. Prevents duplicate display names after deletions.
-function nextNameSuffix(items,prefixRegex){
-  let max=0;
-  for(const it of items){
-    const m=String(it.name||'').match(prefixRegex);
-    if(m){const n=parseInt(m[1],10);if(n>max)max=n;}
-  }
-  return max+1;
-}
+function syncNidFromFloors(){nid=_syncNidFromFloors(FLOORS);}
 function applyT(){
   // Clamp pan so the image stays connected to the viewport. Two regimes:
   //  - Image smaller than viewport on an axis → center it on that axis
@@ -971,14 +595,14 @@ function fracToImg(fx,fy){return{x:fx*(mapImg.naturalWidth||1),y:fy*(mapImg.natu
 // Strips per-AP cache fields (anything starting with `_`) so the snapshot
 // stays small and never resurrects stale geometry caches on undo.
 function _serializeState(){
-  return JSON.stringify({floors:FLOORS,curFloor,scaleM},(k,v)=>k.startsWith('_')?undefined:v);
+  // Per-floor scaleM is carried inside each floor object now.
+  return JSON.stringify({floors:FLOORS,curFloor},(k,v)=>k.startsWith('_')?undefined:v);
 }
 function _restoreState(json){
   const s=JSON.parse(json);
   FLOORS=s.floors;
   curFloor=Math.max(0,Math.min(FLOORS.length-1,s.curFloor??0));
-  scaleM=s.scaleM??100;
-  const sEl=document.getElementById('scale-m');if(sEl)sEl.value=scaleM;
+  syncScaleFromFloor();
   invalidateCoverageCache();
 }
 function snapshot(){
@@ -1081,7 +705,10 @@ viewport.addEventListener('click',e=>{
     snapshot();
     const id='ap'+nid++;
     const num=nextNameSuffix(APS(),/^AP-(\d+)/);
-    APS().push({id,name:'AP-'+String(num).padStart(2,'0'),model:'U6 Pro',freq:'2.4 / 5 GHz',channel:'auto',txPower:'auto',sig:'strong',color:'',ip:'',mac:'',port:'',vlan:'',notes:'',fx,fy,r:rangeMToPx(AP_RANGE_M['U6 Pro']),locked:false});
+    // Remember last-used model: new APs default to whatever model the user
+    // last selected or placed in this session (or the project default).
+    const defaultModel=AP_RANGE_M[SETTINGS.lastModel]?SETTINGS.lastModel:'U6 Pro';
+    APS().push({id,name:'AP-'+String(num).padStart(2,'0'),model:defaultModel,freq:'2.4 / 5 GHz',channel:'auto',txPower:'auto',sig:'strong',color:'',ip:'',mac:'',port:'',vlan:'',notes:'',fx,fy,r:rangeMToPx(AP_RANGE_M[defaultModel]),locked:false});
     sel(id,'ap');setMode('sel');render();renderList();calcCoverage();toast('AP placed — edit in panel');
   }else if(mode==='dz'){
     snapshot();
@@ -1125,7 +752,7 @@ function getItemCenter(type,id){
   if(type==='ap'){const ap=APS().find(a=>a.id===id);return ap?{x:ap.fx*w,y:ap.fy*h}:null;}
   if(type==='sw'){const sw=SWS().find(a=>a.id===id);return sw?{x:sw.fx*w,y:sw.fy*h}:null;}
   if(type==='dz'){const dz=DZS().find(a=>a.id===id);return dz?{x:dz.fx*w,y:dz.fy*h}:null;}
-  if(type==='wall'){const wl=WALLS().find(a=>a.id===id);return wl?{x:(wl.x1+wl.x2)/2,y:(wl.y1+wl.y2)/2}:null;}
+  if(type==='wall'){const wl=WALLS().find(a=>a.id===id);if(!wl)return null;const p=_wallPx(wl);return {x:(p.x1+p.x2)/2,y:(p.y1+p.y2)/2};}
   return null;
 }
 // Returns {x,y,w,h} in image coords describing the item's bounding box —
@@ -1135,7 +762,7 @@ function getItemBounds(type,id){
   if(type==='ap'){const ap=APS().find(a=>a.id===id);return ap?{x:ap.fx*w-ap.r,y:ap.fy*h-ap.r,w:ap.r*2,h:ap.r*2}:null;}
   if(type==='dz'){const dz=DZS().find(a=>a.id===id);return dz?{x:dz.fx*w-dz.r,y:dz.fy*h-dz.r,w:dz.r*2,h:dz.r*2}:null;}
   if(type==='sw'){const sw=SWS().find(a=>a.id===id);if(!sw)return null;const sz=sw.size||22;return {x:sw.fx*w-sz,y:sw.fy*h-sz*.6,w:sz*2,h:sz*1.2};}
-  if(type==='wall'){const wl=WALLS().find(a=>a.id===id);if(!wl)return null;const x=Math.min(wl.x1,wl.x2),y=Math.min(wl.y1,wl.y2);return {x,y,w:Math.abs(wl.x2-wl.x1)+1,h:Math.abs(wl.y2-wl.y1)+1};}
+  if(type==='wall'){const wl=WALLS().find(a=>a.id===id);if(!wl)return null;const p=_wallPx(wl);const x=Math.min(p.x1,p.x2),y=Math.min(p.y1,p.y2);return {x,y,w:Math.abs(p.x2-p.x1)+1,h:Math.abs(p.y2-p.y1)+1};}
   return null;
 }
 
@@ -1200,24 +827,27 @@ function clearRuler(){
 }
 
 // ═══ WALLS ════════════════════════════════════════
-// Drawn as straight line segments between two points, with per-material
-// stroke width. Selected wall gets a highlight + a small material label pill.
+// Walls store fractional coords (fx1/fy1/fx2/fy2 in 0..1) so they survive
+// map image swaps. We resolve to absolute pixels at render time. Drawn as
+// straight line segments between two points, with per-material stroke width.
+function _wallPx(w){return wallToPx(w,mapImg.naturalWidth||1,mapImg.naturalHeight||1);}
 function renderWalls(){
   wallLayer.innerHTML='';
   WALLS().forEach(w=>{
     const mat=WALL_MATERIALS[w.material]||WALL_MATERIALS.drywall;
     const isSel=(selType==='wall'&&selId===w.id);
+    const px=_wallPx(w);
     // Thin highlight underlay when selected
     if(isSel){
       const hl=mk('line');
-      hl.setAttribute('x1',w.x1);hl.setAttribute('y1',w.y1);
-      hl.setAttribute('x2',w.x2);hl.setAttribute('y2',w.y2);
+      hl.setAttribute('x1',px.x1);hl.setAttribute('y1',px.y1);
+      hl.setAttribute('x2',px.x2);hl.setAttribute('y2',px.y2);
       hl.setAttribute('class','wall-sel-hl');
       wallLayer.appendChild(hl);
     }
     const ln=mk('line');
-    ln.setAttribute('x1',w.x1);ln.setAttribute('y1',w.y1);
-    ln.setAttribute('x2',w.x2);ln.setAttribute('y2',w.y2);
+    ln.setAttribute('x1',px.x1);ln.setAttribute('y1',px.y1);
+    ln.setAttribute('x2',px.x2);ln.setAttribute('y2',px.y2);
     ln.setAttribute('class','wall-line');
     ln.setAttribute('stroke-width',mat.strokeWidth);
     if(mat.dash)ln.setAttribute('stroke-dasharray',mat.dash);
@@ -1230,7 +860,7 @@ function renderWalls(){
     wallLayer.appendChild(ln);
     // Draw a small material pill near the midpoint when selected
     if(isSel){
-      const mx=(w.x1+w.x2)/2,my=(w.y1+w.y2)/2;
+      const mx=(px.x1+px.x2)/2,my=(px.y1+px.y2)/2;
       const bg=mk('rect');
       bg.setAttribute('x',mx-22);bg.setAttribute('y',my-9);
       bg.setAttribute('width',44);bg.setAttribute('height',18);
@@ -1277,11 +907,12 @@ function commitWall(x2,y2){
   if(!wallStart)return;
   // Avoid zero-length walls from accidental double-clicks
   if(Math.hypot(x2-wallStart.x,y2-wallStart.y)<3){wallStart=null;wallHover=null;renderWallPreview();return;}
+  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
   snapshot();
   WALLS().push({
     id:'w'+(++nid),
-    x1:wallStart.x,y1:wallStart.y,
-    x2,y2,
+    fx1:wallStart.x/w,fy1:wallStart.y/h,
+    fx2:x2/w,        fy2:y2/h,
     material:'drywall',
   });
   wallStart=null;wallHover=null;
@@ -1367,6 +998,9 @@ function renderAPs(){
     const hasWalls=WALLS().length>0;
     // Per-AP color (empty string = use default ink — no override)
     const apColor=ap.color||'';
+    // User-controlled coverage opacity (Settings → Coverage opacity).
+    // 100 = full strength; values below 100 fade the ring fill+stroke.
+    const covOp=Math.max(0,Math.min(1,(SETTINGS.coverageOpacity??100)/100));
     // Outer coverage: wall-clipped path if walls exist, else simple circle
     let ro;
     if(hasWalls){
@@ -1382,6 +1016,7 @@ function renderAPs(){
       ro.style.stroke=apColor;
       ro.style.fill=hexToRgba(apColor,.08);
     }
+    if(covOp<1)ro.setAttribute('opacity',covOp);
     // Only animate the spin when we're showing a plain circle — spinning a
     // polygon looks wrong because its shape is directional.
     if(!hasWalls){ro.style.transformOrigin=`${cx}px ${cy}px`;ro.style.animation='spin 20s linear infinite';}
@@ -1400,6 +1035,7 @@ function renderAPs(){
       ri.style.stroke=apColor;
       ri.style.fill=hexToRgba(apColor,.12);
     }
+    if(covOp<1)ri.setAttribute('opacity',covOp);
 
     const dot=mk('circle');dot.setAttribute('cx',cx);dot.setAttribute('cy',cy);dot.setAttribute('r',7);
     dot.setAttribute('class',isSel?'ap-sel-dot':'ap-dot');dot.setAttribute('filter','url(#gf)');
@@ -1489,6 +1125,60 @@ function renderSWs(){
   });
 }
 
+// ═══ CHANNEL OVERLAP ══════════════════════════════
+// Visually flag APs that share or overlap their RF channels AND whose
+// coverage circles touch. Two channels overlap if:
+//   - They're the same number on any band
+//   - Both are 2.4 GHz channels within 4 of each other (22 MHz wide,
+//     5 MHz apart — so 1&5 are the boundary case)
+// Channels parsed loosely: "6", "ch6", "auto" → numeric or "auto".
+function _parseChannel(c){
+  if(!c||c==='auto')return null;
+  const m=String(c).match(/(\d+)/);
+  return m?parseInt(m[1],10):null;
+}
+function _is24Channel(n){return Number.isInteger(n)&&n>=1&&n<=14;}
+function chanOverlap(a,b){
+  const ai=_parseChannel(a),bi=_parseChannel(b);
+  if(ai==null||bi==null)return false;
+  if(ai===bi)return true;
+  if(_is24Channel(ai)&&_is24Channel(bi)&&Math.abs(ai-bi)<5)return true;
+  return false;
+}
+function renderChannelOverlap(){
+  chOverlapLayer.innerHTML='';
+  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
+  if(!w||!h)return;
+  const aps=APS();
+  for(let i=0;i<aps.length;i++)for(let j=i+1;j<aps.length;j++){
+    const a=aps[i],b=aps[j];
+    if(!chanOverlap(a.channel,b.channel))continue;
+    const ax=a.fx*w,ay=a.fy*h,bx=b.fx*w,by=b.fy*h;
+    const dist=Math.hypot(ax-bx,ay-by);
+    // Only flag pairs whose coverage areas overlap — otherwise interference
+    // is not really a concern, just a coincidental channel match.
+    if(dist>=(a.r+b.r)*0.9)continue;
+    const ln=mk('line');
+    ln.setAttribute('x1',ax);ln.setAttribute('y1',ay);
+    ln.setAttribute('x2',bx);ln.setAttribute('y2',by);
+    ln.setAttribute('class','ch-overlap-line');
+    chOverlapLayer.appendChild(ln);
+    const mx=(ax+bx)/2,my=(ay+by)/2;
+    const bg=mk('rect');
+    bg.setAttribute('x',mx-26);bg.setAttribute('y',my-10);
+    bg.setAttribute('width',52);bg.setAttribute('height',20);
+    bg.setAttribute('rx',10);bg.setAttribute('class','ch-overlap-bg');
+    chOverlapLayer.appendChild(bg);
+    const txt=mk('text');
+    txt.setAttribute('x',mx);txt.setAttribute('y',my);
+    txt.setAttribute('class','ch-overlap-lbl');
+    const labelA=a.channel==='auto'||!a.channel?'?':a.channel;
+    const labelB=b.channel==='auto'||!b.channel?'?':b.channel;
+    txt.textContent=labelA===labelB?`⚡ Ch ${labelA}`:`⚡ ${labelA}↔${labelB}`;
+    chOverlapLayer.appendChild(txt);
+  }
+}
+
 function renderOL(){
   olLayer.innerHTML='';if(!showOL)return;
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
@@ -1521,7 +1211,7 @@ function renderGrid(){
   gridLayer.appendChild(g);
 }
 
-function render(){_resetThemeCache();renderGrid();renderHeat();renderOL();renderWalls();renderSWs();renderAPs();renderDZs();renderRuler();updateCnt();}
+function render(){_resetThemeCache();renderGrid();renderHeat();renderOL();renderWalls();renderSWs();renderAPs();renderDZs();renderChannelOverlap();renderRuler();updateCnt();}
 
 // ═══ DRAG ═════════════════════════════════════════
 // During an active drag we update the moved item's geometry directly via a
@@ -1579,41 +1269,10 @@ function doResize(cx){
 }
 
 // ═══ COVERAGE CALC ════════════════════════════════
-// Sample a floor for coverage: return {covered, total} pixel-equivalent counts.
-// Wall-aware: when walls are present, a sample point is "covered" only if at
-// least one AP can reach it through the walls (cumulative dB attenuation
-// applied along the line from AP to sample). When there are no walls we use
-// the cheap distance check. The wall-aware path is O(samples * APs * walls)
-// — bounded by the coarse sample step (~60 across the smaller axis).
-function _coveredThroughWalls(ap,sx,sy,w,h,walls){
-  const ax=ap.fx*w, ay=ap.fy*h;
-  const dist=Math.hypot(sx-ax,sy-ay);
-  if(dist>ap.r)return false;
-  if(!walls.length)return true;
-  // Sum dB loss for every wall segment between AP and sample point.
-  let lossDb=0;
-  for(const wl of walls){
-    const t=rayWallIntersect(ax,ay,sx,sy, wl.x1,wl.y1, wl.x2,wl.y2);
-    if(t!==null){
-      const mat=WALL_MATERIALS[wl.material]||WALL_MATERIALS.drywall;
-      lossDb+=mat.loss;
-    }
-  }
-  // Effective reach after attenuation (same factor used by computeCoveragePath).
-  return dist <= ap.r * attenuationFactor(lossDb);
-}
+// Defers to the pure sampler in geometry.js so logic stays in one place.
 function sampleFloorCoverage(floor){
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  const aps=floor.APS||[];
-  if(!aps.length)return {covered:0,total:0};
-  const walls=floor.WALLS||[];
-  const step=Math.max(4,Math.round(Math.min(w,h)/60));
-  let total=0,covered=0;
-  for(let x=0;x<w;x+=step)for(let y=0;y<h;y+=step){
-    total++;
-    if(aps.some(ap=>_coveredThroughWalls(ap,x,y,w,h,walls)))covered++;
-  }
-  return {covered,total};
+  return _sampleFloorCoverage(floor,w,h);
 }
 // Wall-aware sampling is heavier than the old circle check, so coalesce calls
 // during fast operations (drag, slider scrub). `calcCoverage()` schedules the
@@ -1646,7 +1305,8 @@ function _calcCoverageNow(){
 }
 
 // ═══ SCALE ════════════════════════════════════════
-function updateScale(){scaleM=parseFloat(document.getElementById('scale-m').value)||100;updateScaleBar();calcCoverage();render();}
+// Per-floor: writes to F().scaleM as well as the global mirror.
+function updateScale(){snapshotSoon();setScaleM(document.getElementById('scale-m').value);updateScaleBar();calcCoverage();render();renderList();renderRP();}
 function updateScaleBar(){
   const bar=document.getElementById('scale-bar');
   if(!scaleM||!mapImg.naturalWidth){bar.style.display='none';return;}
@@ -1686,7 +1346,8 @@ function renderWallPanel(){
   const w=WALLS().find(x=>x.id===selId);if(!w)return;
   document.getElementById('rp-head').textContent='Edit Wall';
   const mat=WALL_MATERIALS[w.material]||WALL_MATERIALS.drywall;
-  const lengthPx=Math.hypot(w.x2-w.x1,w.y2-w.y1);
+  const px=_wallPx(w);
+  const lengthPx=Math.hypot(px.x2-px.x1,px.y2-px.y1);
   const lengthM=(lengthPx*(scaleM/100)).toFixed(1);
   const opts=WALL_MATERIAL_KEYS.map(k=>{
     const m=WALL_MATERIALS[k];
@@ -1836,6 +1497,8 @@ function updAP(){
     if(slider){slider.value=ap.r;document.getElementById('ep-rv').textContent=Math.round(ap.r*(scaleM/100))+'m';}
     calcCoverage();
   }
+  // Remember this model as the default for the next placed AP.
+  if(ap.model)SETTINGS.lastModel=ap.model;
   render();renderList();
 }
 function updR(v){const ap=APS().find(a=>a.id===selId);if(!ap)return;snapshotSoon();ap.r=parseInt(v);if(WALLS().length)invalidateCoverageCache();document.getElementById('ep-rv').textContent=Math.round(v*(scaleM/100))+'m';render();calcCoverage();}
@@ -1945,7 +1608,8 @@ function renderList(){
       // Use original WALLS() index for display (W-1, W-2, etc.) so numbers match the master list
       const i=WALLS().indexOf(w);
       const mat=WALL_MATERIALS[w.material]||WALL_MATERIALS.drywall;
-      const lenM=(Math.hypot(w.x2-w.x1,w.y2-w.y1)*(scaleM/100)).toFixed(1);
+      const wpx=_wallPx(w);
+      const lenM=(Math.hypot(wpx.x2-wpx.x1,wpx.y2-wpx.y1)*(scaleM/100)).toFixed(1);
       const d=document.createElement('div');
       d.className='list-item'+(w.id===selId?' active':'');
       d.innerHTML=`<span style="font-size:12px">▌</span><div class="li-info"><div class="li-name">Wall ${i+1}</div><div class="li-sub">${esc(mat.label)} · ${lenM} m</div></div><button class="li-del" data-action="quick-del" data-id="${w.id}" data-type="wall">✕</button>`;
@@ -2149,7 +1813,8 @@ ${innerShape}
   const wallSVG=WALLS().map(w=>{
     const mat=WALL_MATERIALS[w.material]||WALL_MATERIALS.drywall;
     const dash=mat.dash?` stroke-dasharray="${mat.dash}"`:'';
-    return `<line x1="${w.x1.toFixed(1)}" y1="${w.y1.toFixed(1)}" x2="${w.x2.toFixed(1)}" y2="${w.y2.toFixed(1)}" stroke="#000" stroke-width="${mat.strokeWidth}" stroke-linecap="round"${dash}/>`;
+    const px=wallToPx(w,cw,ch);
+    return `<line x1="${px.x1.toFixed(1)}" y1="${px.y1.toFixed(1)}" x2="${px.x2.toFixed(1)}" y2="${px.y2.toFixed(1)}" stroke="#000" stroke-width="${mat.strokeWidth}" stroke-linecap="round"${dash}/>`;
   }).join('\n');
   const dzSVG=DZS().map(dz=>{
     if(!Number.isFinite(dz.fx)||!Number.isFinite(dz.fy)||!Number.isFinite(dz.r)||dz.r<=0)return '';
@@ -2304,7 +1969,7 @@ function autosave(){
   // is a few KB even with multi-floor projects.
   if(typeof document!=='undefined'&&document.hidden)return;
   try{
-    const payload=JSON.stringify({version:PROJECT_VERSION,settings:SETTINGS,floors:FLOORS,scaleM,savedAt:new Date().toISOString()},_stripCacheReplacer);
+    const payload=JSON.stringify({version:PROJECT_VERSION,settings:SETTINGS,floors:FLOORS,savedAt:new Date().toISOString()},_stripCacheReplacer);
     if(payload===lastAutosavePayload)return;  // nothing changed
     localStorage.setItem(AUTOSAVE_KEY,payload);
     lastAutosavePayload=payload;
@@ -2331,10 +1996,10 @@ function tryRestoreAutosave(){
     showModalText('Restore Previous Session?',`A saved session from ${when} was found.\n\nRestore it, or start fresh?`,
       async ()=>{
         const [migrated]=migrateProject(data);
-        FLOORS=migrated.floors;scaleM=migrated.scaleM||100;
+        FLOORS=migrated.floors;
         SETTINGS={...DEFAULT_SETTINGS,...(migrated.settings||{})};
-        document.getElementById('scale-m').value=scaleM;
         curFloor=0;selId=null;selType=null;
+        syncScaleFromFloor();
         syncNidFromFloors();
         // Promote any inline images surviving from a pre-v5 autosave.
         await Promise.all(FLOORS.map(async f=>{
@@ -2520,6 +2185,29 @@ function showSettings(){
     row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
     inputs[f.key]=inp;
   });
+
+  // Coverage opacity slider. Live-preview by re-rendering on input, but only
+  // commit (and trigger autosave) when the modal is OK'd.
+  const opacityRow=document.createElement('div');opacityRow.className='ep-row ep-slider-row';
+  const opacityLbl=document.createElement('label');opacityLbl.className='ep-lbl';opacityLbl.textContent='Coverage opacity';
+  const opacityIn=document.createElement('input');
+  opacityIn.type='range';opacityIn.min='20';opacityIn.max='100';opacityIn.step='5';
+  opacityIn.className='ep-rng';
+  const initialOpacity=Math.max(20,Math.min(100,Math.round(SETTINGS.coverageOpacity??100)));
+  opacityIn.value=String(initialOpacity);
+  const opacityVal=document.createElement('span');opacityVal.className='ep-rng-val';opacityVal.textContent=initialOpacity+'%';
+  opacityRow.appendChild(opacityLbl);opacityRow.appendChild(opacityIn);opacityRow.appendChild(opacityVal);
+  wrap.appendChild(opacityRow);
+  // Live preview as the user drags. We swap SETTINGS.coverageOpacity in place
+  // and re-render; if the user cancels we restore the saved value below.
+  const savedOpacity=SETTINGS.coverageOpacity??100;
+  opacityIn.addEventListener('input',()=>{
+    const v=parseInt(opacityIn.value,10)||100;
+    opacityVal.textContent=v+'%';
+    SETTINGS.coverageOpacity=v;
+    render();
+  });
+
   const hint=document.createElement('div');
   hint.className='ep-hint';
   hint.textContent='Saved with the project. Used in HTML/PDF exports and the top-bar brand label.';
@@ -2531,15 +2219,22 @@ function showSettings(){
       const val=(inputs[f.key].value||'').trim();
       if((SETTINGS[f.key]||'')!==val){SETTINGS[f.key]=val;changed=true;}
     }
+    const opacity=parseInt(opacityIn.value,10)||100;
+    if(SETTINGS.coverageOpacity!==opacity){SETTINGS.coverageOpacity=opacity;changed=true;}
     if(changed){
       applySettingsToBrand();
-      // Touch FLOORS so autosave picks up the new settings (settings live at
-      // the top level of the saved payload, but autosave compares serialized
-      // strings — anything that changes the payload qualifies).
+      render();
       autosave();
     }
   };
-  showModalNode('Project Settings',wrap,apply);
+  const cancel=()=>{
+    // Restore the original opacity if the user dragged the slider then cancelled.
+    if(SETTINGS.coverageOpacity!==savedOpacity){
+      SETTINGS.coverageOpacity=savedOpacity;
+      render();
+    }
+  };
+  showModalNode('Project Settings',wrap,apply,cancel);
 }
 
 // ═══ HELP OVERLAY ═════════════════════════════════

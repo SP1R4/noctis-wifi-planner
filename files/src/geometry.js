@@ -1,11 +1,10 @@
 // Pure geometry helpers used by the renderer and the coverage sampler.
 // Kept in their own ES module so they can be unit-tested in isolation
-// (no DOM, no globals). The app.js shim re-imports + re-exports onto the
-// classic-script global namespace for backward compatibility.
+// (no DOM, no globals). app.js imports these as the single source of truth.
 
 // Wall-material attenuation table. `loss` is approximate signal attenuation
-// in dB per traversal (typical 5 GHz indoor wall). Mirrors the table in
-// app.js so geometry can run without depending on app.js.
+// in dB per traversal at 5 GHz (the baseline). Band-aware code multiplies
+// this by a band factor (see BAND_LOSS).
 export const WALL_MATERIALS={
   drywall:  {label:'Drywall',  loss:3,  strokeWidth:1.2},
   wood:     {label:'Wood',     loss:5,  strokeWidth:1.8},
@@ -13,6 +12,19 @@ export const WALL_MATERIALS={
   brick:    {label:'Brick',    loss:10, strokeWidth:2.4},
   concrete: {label:'Concrete', loss:15, strokeWidth:3.5},
 };
+
+// Band-loss multipliers applied to per-wall dB loss. 5 GHz is the baseline
+// (1.0). 2.4 GHz penetrates better → less effective loss. 6 GHz (WiFi 6E)
+// penetrates worse. Values are conservative real-world estimates.
+export const BAND_LOSS={
+  '2.4 GHz only':    0.6,
+  '2.4 / 5 GHz':     0.6,   // dual-band coverage equals the 2.4 GHz reach
+  '5 GHz only':      1.0,
+  '6 GHz (WiFi 6E)': 1.3,
+};
+export function bandLossMultiplier(freq){
+  return BAND_LOSS[freq]??1.0;
+}
 
 // Each 3 dB of loss roughly halves the usable range in that direction.
 // Floored at 0.05 so a thick bunker wall still produces some coverage.
@@ -33,29 +45,38 @@ export function rayWallIntersect(ax,ay, bx,by, wx1,wy1, wx2,wy2){
   return t;
 }
 
+// Resolve a wall to absolute pixel coords given image dimensions.
+// Accepts both fractional (fx1/fy1/fx2/fy2) and legacy pixel (x1/y1/x2/y2) walls.
+export function wallToPx(w,imgW,imgH){
+  if(Number.isFinite(w.fx1)&&Number.isFinite(w.fy1)&&Number.isFinite(w.fx2)&&Number.isFinite(w.fy2)){
+    return {x1:w.fx1*imgW,y1:w.fy1*imgH,x2:w.fx2*imgW,y2:w.fy2*imgH};
+  }
+  return {x1:w.x1||0,y1:w.y1||0,x2:w.x2||0,y2:w.y2||0};
+}
+
 // Compute the polygon of reachable points around an AP considering walls.
-// Returns an SVG path "d" string. If no walls, returns a circle approximation.
-// Inputs:
-//   ap: {fx, fy, r}
-//   imgW, imgH: image dimensions in pixels
-//   walls: array of {x1,y1,x2,y2,material}
-//   rays: number of rays to cast (default 72 = every 5°)
-export function computeCoveragePath(ap,imgW,imgH,walls,rays=72){
+// Returns an SVG path "d" string.
+// opts: {rays:72, bandFactor:1}
+export function computeCoveragePath(ap,imgW,imgH,walls,opts){
+  // Back-compat: callers used to pass `rays` as a number for the 5th arg.
+  const rays=typeof opts==='number'?opts:(opts&&opts.rays)||72;
+  const bandFactor=(opts&&typeof opts==='object'&&opts.bandFactor)??1;
   if(!imgW||!imgH)return 'M0,0Z';
   if(!Number.isFinite(ap.fx)||!Number.isFinite(ap.fy)||!Number.isFinite(ap.r)||ap.r<=0)return 'M0,0Z';
   const cx=ap.fx*imgW, cy=ap.fy*imgH;
   const r=ap.r;
+  const pxWalls=walls.map(w=>({...wallToPx(w,imgW,imgH),material:w.material}));
   const pts=[];
   for(let i=0;i<rays;i++){
     const angle=(i/rays)*Math.PI*2;
     const dx=Math.cos(angle), dy=Math.sin(angle);
     const ex=cx+dx*r, ey=cy+dy*r;
     const hits=[];
-    for(const wall of walls){
+    for(const wall of pxWalls){
       const t=rayWallIntersect(cx,cy,ex,ey,wall.x1,wall.y1,wall.x2,wall.y2);
       if(t!==null){
         const mat=WALL_MATERIALS[wall.material]||WALL_MATERIALS.drywall;
-        hits.push({t,loss:mat.loss});
+        hits.push({t,loss:mat.loss*bandFactor});
       }
     }
     hits.sort((a,b)=>a.t-b.t);
@@ -74,17 +95,19 @@ export function computeCoveragePath(ap,imgW,imgH,walls,rays=72){
 
 // Returns whether a sample point is reachable by an AP considering wall
 // attenuation. Used by the coverage % sampler.
-export function coveredThroughWalls(ap,sx,sy,imgW,imgH,walls){
+export function coveredThroughWalls(ap,sx,sy,imgW,imgH,walls,bandFactor){
+  const bf=bandFactor??1;
   const ax=ap.fx*imgW, ay=ap.fy*imgH;
   const dist=Math.hypot(sx-ax,sy-ay);
   if(dist>ap.r)return false;
   if(!walls.length)return true;
   let lossDb=0;
   for(const wl of walls){
-    const t=rayWallIntersect(ax,ay,sx,sy, wl.x1,wl.y1, wl.x2,wl.y2);
+    const px=wallToPx(wl,imgW,imgH);
+    const t=rayWallIntersect(ax,ay,sx,sy, px.x1,px.y1, px.x2,px.y2);
     if(t!==null){
       const mat=WALL_MATERIALS[wl.material]||WALL_MATERIALS.drywall;
-      lossDb+=mat.loss;
+      lossDb+=mat.loss*bf;
     }
   }
   return dist <= ap.r * attenuationFactor(lossDb);
@@ -92,7 +115,7 @@ export function coveredThroughWalls(ap,sx,sy,imgW,imgH,walls){
 
 // Sample a floor for coverage at a coarse grid; return {covered, total}.
 // Wall-aware: respects per-wall dB attenuation along the line from AP to
-// sample point.
+// sample point. Each AP uses its own band multiplier based on `ap.freq`.
 export function sampleFloorCoverage(floor,imgW,imgH){
   const aps=floor.APS||[];
   if(!aps.length)return {covered:0,total:0};
@@ -102,7 +125,7 @@ export function sampleFloorCoverage(floor,imgW,imgH){
   let total=0,covered=0;
   for(let x=0;x<w;x+=step)for(let y=0;y<h;y+=step){
     total++;
-    if(aps.some(ap=>coveredThroughWalls(ap,x,y,w,h,walls)))covered++;
+    if(aps.some(ap=>coveredThroughWalls(ap,x,y,w,h,walls,bandLossMultiplier(ap.freq))))covered++;
   }
   return {covered,total};
 }

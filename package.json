@@ -5,8 +5,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite files --port 5173",
-    "build": "vite build files",
+    "dev": "vite --port 5173",
+    "build": "vite build",
     "test": "vitest run",
     "test:watch": "vitest"
   },

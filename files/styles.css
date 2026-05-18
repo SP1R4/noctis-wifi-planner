@@ -851,6 +851,24 @@ body.sb-resizing iframe{pointer-events:none}
   pointer-events:none;
 }
 
+/* Channel overlap warnings — APs sharing or interfering on a channel get a
+   dashed orange line between them with a "⚡ Ch X" pill at the midpoint. */
+.ch-overlap-line{
+  stroke:#d95a0c;stroke-width:1.6;
+  stroke-dasharray:5 4;opacity:.75;
+  pointer-events:none;
+}
+.ch-overlap-bg{
+  fill:var(--bg);stroke:#d95a0c;stroke-width:1.2;
+  pointer-events:none;
+}
+.ch-overlap-lbl{
+  fill:#d95a0c;font-family:'Share Tech Mono',monospace;font-size:10px;
+  font-weight:700;letter-spacing:.05em;
+  text-anchor:middle;dominant-baseline:central;
+  pointer-events:none;
+}
+
 /* Panel readout rows (used for wall info display) */
 .ep-readout{
   padding:6px 9px;

@@ -83,6 +83,72 @@ describe('syncNidFromFloors',()=>{
   });
 });
 
+describe('migrateProject — v5 → v6 (per-floor scaleM + fractional walls)',()=>{
+  test('legacy project-level scaleM propagates to every floor',()=>{
+    const [data]=migrateProject({
+      version:5,scaleM:150,
+      floors:[{APS:[],DZS:[],SWS:[],WALLS:[]},{APS:[],DZS:[],SWS:[],WALLS:[]}],
+    });
+    expect(data.floors[0].scaleM).toBe(150);
+    expect(data.floors[1].scaleM).toBe(150);
+    // project-level scaleM is removed
+    expect(data.scaleM).toBeUndefined();
+  });
+  test('missing scaleM defaults to 100',()=>{
+    const [data]=migrateProject({version:5,floors:[{APS:[],DZS:[],SWS:[],WALLS:[]}]});
+    expect(data.floors[0].scaleM).toBe(100);
+  });
+  test('per-floor scaleM honoured if already set',()=>{
+    const [data]=migrateProject({
+      version:6,scaleM:200,
+      floors:[{APS:[],DZS:[],SWS:[],WALLS:[],scaleM:42}],
+    });
+    expect(data.floors[0].scaleM).toBe(42);
+  });
+  test('walls with stored imgW/imgH are converted to fractional',()=>{
+    const [data]=migrateProject({
+      version:5,
+      floors:[{
+        imgW:1000,imgH:500,APS:[],DZS:[],SWS:[],
+        WALLS:[{id:'w1',x1:100,y1:100,x2:500,y2:300,material:'brick'}],
+      }],
+    });
+    const w=data.floors[0].WALLS[0];
+    expect(w.fx1).toBeCloseTo(0.1,5);
+    expect(w.fy1).toBeCloseTo(0.2,5);
+    expect(w.fx2).toBeCloseTo(0.5,5);
+    expect(w.fy2).toBeCloseTo(0.6,5);
+    expect(w.x1).toBeUndefined();
+  });
+  test('walls without imgW/imgH stay legacy until geometry resolves them',()=>{
+    const [data]=migrateProject({
+      version:5,
+      floors:[{APS:[],DZS:[],SWS:[],WALLS:[{x1:1,y1:2,x2:3,y2:4,material:'wood'}]}],
+    });
+    const w=data.floors[0].WALLS[0];
+    expect(w.x1).toBe(1);
+    expect(w.fx1).toBeUndefined();
+  });
+});
+
+describe('migrateProject — new SETTINGS keys',()=>{
+  test('coverageOpacity defaults to 100',()=>{
+    const [data]=migrateProject({version:5,floors:[{APS:[],DZS:[],SWS:[],WALLS:[]}]});
+    expect(data.settings.coverageOpacity).toBe(100);
+  });
+  test('coverageOpacity honoured when set as a number',()=>{
+    const [data]=migrateProject({
+      version:6,settings:{coverageOpacity:55},
+      floors:[{APS:[],DZS:[],SWS:[],WALLS:[]}],
+    });
+    expect(data.settings.coverageOpacity).toBe(55);
+  });
+  test('lastModel defaults to U6 Pro',()=>{
+    const [data]=migrateProject({version:5,floors:[{APS:[],DZS:[],SWS:[],WALLS:[]}]});
+    expect(data.settings.lastModel).toBe('U6 Pro');
+  });
+});
+
 describe('nextNameSuffix',()=>{
   test('starts at 1 with no items',()=>{
     expect(nextNameSuffix([],/^AP-(\d+)/)).toBe(1);
