@@ -1,5 +1,6 @@
 # NOCTIS WiFi Planner
 
+[![Release](https://img.shields.io/github/v/release/SP1R4/noctis-wifi-planner?color=black&label=release)](https://github.com/SP1R4/noctis-wifi-planner/releases/latest)
 [![CI](https://github.com/SP1R4/noctis-wifi-planner/actions/workflows/ci.yml/badge.svg)](https://github.com/SP1R4/noctis-wifi-planner/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
 [![Vite](https://img.shields.io/badge/built%20with-vite-646cff.svg)](https://vitejs.dev/)
@@ -13,6 +14,16 @@ band-aware (2.4 / 5 / 6 GHz), and exports a printable PDF report when
 the survey is done.
 
 No backend. No accounts. Projects save to a JSON file you can email.
+
+---
+
+> ## 🎉 v1.0.0 — first public release
+>
+> NOCTIS WiFi Planner is now open source under the MIT license.
+> Pre-built bundle (40 KB zip — unzip and open `index.html`, no Node required):
+> **[Download v1.0.0](https://github.com/SP1R4/noctis-wifi-planner/releases/download/v1.0.0/noctis-wifi-planner-v1.0.0.zip)**
+> · [Release notes](https://github.com/SP1R4/noctis-wifi-planner/releases/tag/v1.0.0)
+> · [Changelog](CHANGELOG.md)
 
 ---
 
