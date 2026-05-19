@@ -9,6 +9,7 @@ import {
   BAND_LOSS,
   bandLossMultiplier,
   wallToPx,
+  dbmAt,
 } from '../files/src/geometry.js';
 
 describe('attenuationFactor',()=>{
@@ -163,6 +164,56 @@ describe('BAND_LOSS table',()=>{
     expect(Object.keys(BAND_LOSS).sort()).toEqual([
       '2.4 / 5 GHz','2.4 GHz only','5 GHz only','6 GHz (WiFi 6E)',
     ].sort());
+  });
+});
+
+describe('computeCoveragePath with directional pattern',()=>{
+  test('omni covers all angles',()=>{
+    const path=computeCoveragePath({fx:0.5,fy:0.5,r:50},200,200,[],{arcDeg:180,headingDeg:0});
+    // 72 points, all close to r distance from centre.
+    const matches=path.match(/-?\d+\.\d+,-?\d+\.\d+/g);
+    expect(matches.length).toBe(72);
+  });
+  test('narrow sector (arcDeg=15) leaves most rays collapsed near the centre',()=>{
+    // 15° half-width = a 30° wedge — about 30/360 = 8% of rays at full reach.
+    // The rest should be a near-zero stub right next to the centre.
+    const path=computeCoveragePath({fx:0.5,fy:0.5,r:100},200,200,[],{arcDeg:15,headingDeg:0});
+    // Strip the leading M and the trailing Z, split on L.
+    const pts=path.slice(1,-1).split(/[ML]/).filter(Boolean).map(p=>p.split(',').map(Number));
+    const farFromCentre=pts.filter(([x,y])=>Math.hypot(x-100,y-100)>20).length;
+    expect(farFromCentre).toBeLessThan(20);  // most should be near centre
+    expect(farFromCentre).toBeGreaterThan(0); // but some should reach
+  });
+});
+
+describe('dbmAt',()=>{
+  const ap={fx:0.5,fy:0.5,r:100};
+  test('returns null beyond range',()=>{
+    expect(dbmAt(ap,250,100,200,200,[])).toBeNull();
+  });
+  test('returns a number inside range',()=>{
+    const d=dbmAt(ap,120,100,200,200,[]);
+    expect(d).not.toBeNull();
+    expect(d).toBeLessThan(-30);
+    expect(d).toBeGreaterThan(-95);
+  });
+  test('closer-to-AP means stronger signal',()=>{
+    const near=dbmAt(ap,110,100,200,200,[]);
+    const far=dbmAt(ap,180,100,200,200,[]);
+    expect(near).toBeGreaterThan(far);
+  });
+  test('directional gating excludes points outside the cone',()=>{
+    // Cone centred at heading=0 (east), arc 15° → point due south is excluded.
+    expect(dbmAt(ap,100,180,200,200,[],{arcDeg:15,headingDeg:0})).toBeNull();
+    // Point due east at the same distance is inside the cone.
+    expect(dbmAt(ap,180,100,200,200,[],{arcDeg:15,headingDeg:0})).not.toBeNull();
+  });
+  test('walls drop the dBm value',()=>{
+    const walls=[{x1:110,y1:0,x2:110,y2:200,material:'brick'}];
+    const open=dbmAt(ap,120,100,200,200,[]);
+    const blocked=dbmAt(ap,120,100,200,200,walls);
+    // Either it's null (walls killed coverage) or significantly weaker.
+    if(blocked!==null)expect(blocked).toBeLessThan(open-5);
   });
 });
 

@@ -3,7 +3,7 @@
 
 import {WALL_MATERIALS} from './geometry.js';
 
-export const PROJECT_VERSION=6;
+export const PROJECT_VERSION=7;
 
 export const DEFAULT_SETTINGS={
   company:    'NOCTIS',
@@ -28,6 +28,8 @@ const DEFAULT_FLOOR_SCALE_M=100;
 //   v4 → v5: floor images move to IndexedDB; settings live at the top level.
 //   v5 → v6: walls store fractional coords (fx1/fy1/fx2/fy2);
 //            scaleM moves from project-level to per-floor.
+//   v6 → v7: per-floor CAMS array. APs gain pattern+heading for directional
+//            antennas. Each AP/camera carries `swPort` for PoE/cable runs.
 //
 // This function is sync and pure — actual IndexedDB promotion of inline
 // images happens in app.js after migrateProject() returns.
@@ -67,11 +69,30 @@ export function migrateProject(data){
       if(!ap.channel)ap.channel='auto';
       if(!ap.txPower)ap.txPower='auto';
       if(typeof ap.color!=='string')ap.color='';
+      // v6→v7: directional antenna defaults to omnidirectional (legacy behaviour).
+      if(!ap.pattern)ap.pattern='omni';
+      if(typeof ap.heading!=='number')ap.heading=0;
+      // Switch port for PoE/cable visualization; empty until the user assigns one.
+      if(typeof ap.swId!=='string')ap.swId='';
     });
     (f.DZS||[]).forEach(dz=>{if(typeof dz.locked!=='boolean')dz.locked=false;if(typeof dz.r!=='number')dz.r=40;});
     (f.SWS||[]).forEach(sw=>{
       if(typeof sw.locked!=='boolean')sw.locked=false;
       if(typeof sw.size!=='number'||sw.size<=0)sw.size=22;
+      // PoE budget in watts. 0 = "non-PoE" or unknown; user can override per switch.
+      if(typeof sw.poeBudget!=='number')sw.poeBudget=0;
+    });
+    // v6→v7: cameras are a new top-level array per floor.
+    if(!Array.isArray(f.CAMS))f.CAMS=[];
+    f.CAMS.forEach(cam=>{
+      if(!cam.model)cam.model='G4 Pro';
+      if(typeof cam.locked!=='boolean')cam.locked=false;
+      if(typeof cam.fov!=='number'||cam.fov<=0)cam.fov=80;
+      if(typeof cam.range!=='number'||cam.range<=0)cam.range=120;
+      if(typeof cam.heading!=='number')cam.heading=0;
+      if(typeof cam.color!=='string')cam.color='';
+      if(typeof cam.swId!=='string')cam.swId='';
+      if(!cam.resolution)cam.resolution='4K';
     });
     if(!Array.isArray(f.WALLS))f.WALLS=[];
     f.WALLS.forEach(w=>{
@@ -104,7 +125,7 @@ export function migrateProject(data){
 export function syncNidFromFloors(floors){
   let maxNum=0;
   for(const f of floors){
-    for(const list of [f.APS,f.DZS,f.SWS,f.WALLS]){
+    for(const list of [f.APS,f.DZS,f.SWS,f.WALLS,f.CAMS]){
       if(!Array.isArray(list))continue;
       for(const item of list){
         if(!item.id)continue;

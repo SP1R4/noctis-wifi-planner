@@ -149,6 +149,44 @@ describe('migrateProject — new SETTINGS keys',()=>{
   });
 });
 
+describe('migrateProject — v6 → v7 (cameras, antenna patterns, PoE)',()=>{
+  test('every floor gets a CAMS array',()=>{
+    const [data]=migrateProject({version:6,floors:[{APS:[],DZS:[],SWS:[],WALLS:[]}]});
+    expect(Array.isArray(data.floors[0].CAMS)).toBe(true);
+  });
+  test('existing CAMS are preserved + filled with defaults',()=>{
+    const [data]=migrateProject({version:6,floors:[{APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[{id:'cm1',name:'CAM-01',fx:.5,fy:.5}]}]});
+    const c=data.floors[0].CAMS[0];
+    expect(c.model).toBe('G4 Pro');
+    expect(c.fov).toBe(80);
+    expect(c.range).toBe(120);
+    expect(c.heading).toBe(0);
+    expect(c.locked).toBe(false);
+    expect(c.resolution).toBe('4K');
+  });
+  test('APs gain pattern + heading defaults',()=>{
+    const [data]=migrateProject({version:6,floors:[{APS:[{id:'ap1',fx:.5,fy:.5,r:80}],DZS:[],SWS:[],WALLS:[]}]});
+    const ap=data.floors[0].APS[0];
+    expect(ap.pattern).toBe('omni');
+    expect(ap.heading).toBe(0);
+    expect(ap.swId).toBe('');
+  });
+  test('APs keep an explicit pattern when set',()=>{
+    const [data]=migrateProject({version:7,floors:[{APS:[{id:'ap1',fx:.5,fy:.5,r:80,pattern:'sector-90',heading:90}],DZS:[],SWS:[],WALLS:[]}]});
+    const ap=data.floors[0].APS[0];
+    expect(ap.pattern).toBe('sector-90');
+    expect(ap.heading).toBe(90);
+  });
+  test('switches gain a poeBudget default',()=>{
+    const [data]=migrateProject({version:6,floors:[{APS:[],DZS:[],SWS:[{id:'sw1',name:'SW-1'}],WALLS:[]}]});
+    expect(data.floors[0].SWS[0].poeBudget).toBe(0);
+  });
+  test('switches keep an explicit poeBudget',()=>{
+    const [data]=migrateProject({version:7,floors:[{APS:[],DZS:[],SWS:[{id:'sw1',name:'SW-1',poeBudget:250}],WALLS:[]}]});
+    expect(data.floors[0].SWS[0].poeBudget).toBe(250);
+  });
+});
+
 describe('nextNameSuffix',()=>{
   test('starts at 1 with no items',()=>{
     expect(nextNameSuffix([],/^AP-(\d+)/)).toBe(1);

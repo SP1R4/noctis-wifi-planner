@@ -54,13 +54,26 @@ export function wallToPx(w,imgW,imgH){
   return {x1:w.x1||0,y1:w.y1||0,x2:w.x2||0,y2:w.y2||0};
 }
 
+// Normalize an angle to [-180, 180].
+function _angleDelta(a,b){
+  let d=a-b;
+  while(d>180)d-=360;
+  while(d<-180)d+=360;
+  return d;
+}
+
 // Compute the polygon of reachable points around an AP considering walls.
 // Returns an SVG path "d" string.
-// opts: {rays:72, bandFactor:1}
+// opts: {rays:72, bandFactor:1, arcDeg:180, headingDeg:0}
+//   arcDeg=180 means "omnidirectional" — full 360° coverage.
+//   arcDeg<180 carves a wedge with half-width arcDeg around headingDeg.
 export function computeCoveragePath(ap,imgW,imgH,walls,opts){
   // Back-compat: callers used to pass `rays` as a number for the 5th arg.
   const rays=typeof opts==='number'?opts:(opts&&opts.rays)||72;
   const bandFactor=(opts&&typeof opts==='object'&&opts.bandFactor)??1;
+  const arcDeg=(opts&&typeof opts==='object'&&typeof opts.arcDeg==='number')?opts.arcDeg:180;
+  const headingDeg=(opts&&typeof opts==='object'&&typeof opts.headingDeg==='number')?opts.headingDeg:0;
+  const directional=arcDeg<180;
   if(!imgW||!imgH)return 'M0,0Z';
   if(!Number.isFinite(ap.fx)||!Number.isFinite(ap.fy)||!Number.isFinite(ap.r)||ap.r<=0)return 'M0,0Z';
   const cx=ap.fx*imgW, cy=ap.fy*imgH;
@@ -68,7 +81,15 @@ export function computeCoveragePath(ap,imgW,imgH,walls,opts){
   const pxWalls=walls.map(w=>({...wallToPx(w,imgW,imgH),material:w.material}));
   const pts=[];
   for(let i=0;i<rays;i++){
-    const angle=(i/rays)*Math.PI*2;
+    const angleDeg=(i/rays)*360;
+    // Directional: if this ray is outside the heading's arc, collapse it to
+    // a near-zero reach so the polygon hugs the AP centre on that side.
+    if(directional && Math.abs(_angleDelta(angleDeg,headingDeg))>arcDeg){
+      const a=angleDeg*Math.PI/180;
+      pts.push({x:cx+Math.cos(a)*r*0.02, y:cy+Math.sin(a)*r*0.02});
+      continue;
+    }
+    const angle=angleDeg*Math.PI/180;
     const dx=Math.cos(angle), dy=Math.sin(angle);
     const ex=cx+dx*r, ey=cy+dy*r;
     const hits=[];
@@ -91,6 +112,46 @@ export function computeCoveragePath(ap,imgW,imgH,walls,opts){
     pts.push({x:cx+dx*r*reachT, y:cy+dy*r*reachT});
   }
   return 'M'+pts.map(p=>`${p.x.toFixed(1)},${p.y.toFixed(1)}`).join('L')+'Z';
+}
+
+// Estimate the signal strength in dBm at a sample point from a single AP.
+// Returns null if the point is beyond the AP's effective range. Uses a
+// log-distance path-loss approximation: -30 dBm at the source, -10 dBm per
+// decade of distance (a rough free-space-ish slope), minus accumulated
+// wall loss. Good enough for relative shading on a heatmap; not a survey.
+//
+// opts: {bandFactor:1, arcDeg:180, headingDeg:0}
+//   arcDeg < 180 carves a directional cone (half-width) around headingDeg.
+//   Back-compat: the 7th positional arg may still be a number (bandFactor).
+export function dbmAt(ap,sx,sy,imgW,imgH,walls,opts){
+  const bf=typeof opts==='number'?opts:((opts&&opts.bandFactor)??1);
+  const arcDeg=(opts&&typeof opts==='object'&&typeof opts.arcDeg==='number')?opts.arcDeg:180;
+  const headingDeg=(opts&&typeof opts==='object'&&typeof opts.headingDeg==='number')?opts.headingDeg:0;
+  const ax=ap.fx*imgW, ay=ap.fy*imgH;
+  const dist=Math.hypot(sx-ax,sy-ay);
+  if(dist>ap.r)return null;
+  // Directional gating: outside the cone, no signal contribution.
+  if(arcDeg<180){
+    const angle=Math.atan2(sy-ay,sx-ax)*180/Math.PI;
+    if(Math.abs(_angleDelta(angle,headingDeg))>arcDeg)return null;
+  }
+  let lossDb=0;
+  for(const wl of walls){
+    const px=wallToPx(wl,imgW,imgH);
+    const t=rayWallIntersect(ax,ay,sx,sy,px.x1,px.y1,px.x2,px.y2);
+    if(t!==null){
+      const mat=WALL_MATERIALS[wl.material]||WALL_MATERIALS.drywall;
+      lossDb+=mat.loss*bf;
+    }
+  }
+  // Reject the point if walls would push effective range below the actual distance.
+  if(dist > ap.r*attenuationFactor(lossDb))return null;
+  // Free-space-ish path loss: at distance ratio d/r, signal is -55 dBm at the
+  // edge of the (unobstructed) range and -30 dBm right at the AP. Linear in
+  // dBm against log-distance is close enough for the heatmap.
+  const dRatio=Math.max(0.05,dist/ap.r);
+  const fsLoss=25*Math.log10(1/dRatio); // 25 dB of headroom across the radius
+  return -55 + fsLoss - lossDb;
 }
 
 // Returns whether a sample point is reachable by an AP considering wall

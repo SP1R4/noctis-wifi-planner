@@ -15,9 +15,12 @@
     <div class="tsep"></div>
     <button class="btn" data-action="new-project" title="Start a fresh project">✦ New</button>
     <button class="btn" data-action="open-upload">↑ Upload Map</button>
-    <input type="file" id="file-up" accept="image/*" style="display:none" data-change-action="upload-map"/>
+    <input type="file" id="file-up" accept="image/*,.svg" style="display:none" data-change-action="upload-map"/>
+    <button class="btn" data-action="open-svg" title="Import walls from an SVG floor-plan">↺ Walls SVG</button>
+    <input type="file" id="svg-up" accept=".svg,image/svg+xml" style="display:none" data-change-action="import-svg-walls"/>
     <button class="btn" data-action="save">💾 Save</button>
     <button class="btn" data-action="open-load">📂 Load</button>
+    <button class="btn" data-action="share-link" title="Copy a shareable URL of the current project (images not included)">🔗 Share</button>
     <input type="file" id="load-up" accept=".json" style="display:none" data-change-action="load-project"/>
     <div class="tsep"></div>
     <button class="btn btn-ghost" id="btn-undo" data-action="undo" title="Undo (Ctrl+Z)" disabled>↩ Undo</button>
@@ -43,6 +46,7 @@
       <button class="btn-tool" id="btn-sel" data-action="set-mode" data-arg="sel" title="Select (S)" aria-label="Select">↖</button>
       <button class="btn-tool" id="btn-dz" data-action="set-mode" data-arg="dz" title="Dead Zone (D)" aria-label="Dead Zone">⚠</button>
       <button class="btn-tool" id="btn-sw" data-action="set-mode" data-arg="sw" title="Switch/Router (W)" aria-label="Switch / Router">⊞</button>
+      <button class="btn-tool" id="btn-cam" data-action="set-mode" data-arg="cam" title="Camera (C)" aria-label="Camera">◉</button>
       <button class="btn-tool" id="btn-ruler" data-action="set-mode" data-arg="ruler" title="Ruler (R)" aria-label="Ruler">↔</button>
       <button class="btn-tool" id="btn-wall" data-action="set-mode" data-arg="wall" title="Wall (L)" aria-label="Wall">▌</button>
     </div>
@@ -65,6 +69,13 @@
       <span class="toggle-lbl">Grid</span>
       <span class="toggle-switch" aria-hidden="true"></span>
     </button>
+    <button class="toggle" id="btn-cables" data-action="toggle-cables" title="Show cable runs to switches">
+      <span class="toggle-lbl">Cables</span>
+      <span class="toggle-switch" aria-hidden="true"></span>
+    </button>
+    <div class="tsep"></div>
+    <button class="btn" data-action="auto-place" title="Auto-place APs to reach target coverage">✦ Auto-place</button>
+    <button class="btn" data-action="show-poe" title="PoE budget summary">⚡ PoE</button>
 
     <div class="topbar-spacer"></div>
 
@@ -116,6 +127,7 @@
       <div id="vp" class="cur-cross">
         <div id="cv">
           <img id="mi" src="" alt="Map"/>
+          <canvas id="heat-canvas"></canvas>
           <svg id="sl" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <filter id="gf"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
@@ -124,11 +136,14 @@
             <g id="heat-layer"></g>
             <g id="ol-layer"></g>
             <g id="wall-layer"></g>
+            <g id="cable-layer"></g>
             <g id="sw-layer"></g>
             <g id="ap-layer"></g>
+            <g id="cam-layer"></g>
             <g id="dz-layer"></g>
             <g id="ch-overlap-layer"></g>
             <g id="ruler-layer"></g>
+            <g id="marquee-layer"></g>
           </svg>
         </div>
       </div>

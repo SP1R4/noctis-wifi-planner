@@ -6,51 +6,85 @@
 [![Vite](https://img.shields.io/badge/built%20with-vite-646cff.svg)](https://vitejs.dev/)
 [![Vanilla JS](https://img.shields.io/badge/no%20framework-vanilla%20JS-f7df1e.svg)](#)
 
-A single-page WiFi coverage planner that runs entirely in the browser.
-Drop a floor-plan image, place access points, draw walls in different
-materials, mark dead zones, and watch wall-aware coverage polygons fall
-out of a ray-cast simulation in real time. Multi-floor, undo/redo,
-band-aware (2.4 / 5 / 6 GHz), and exports a printable PDF report when
-the survey is done.
+A single-page network planner that runs entirely in the browser. Drop a
+floor-plan image, place access points and IP cameras, draw walls in
+different materials, link devices to PoE switches, and watch wall-aware
+coverage polygons + a real signal-strength heatmap fall out of a ray-cast
+simulation in real time. Multi-floor, multi-select, undo/redo,
+band-aware (2.4 / 5 / 6 GHz), directional antennas, PoE budget +
+cable-run visualization, and exports a per-floor PDF report when the
+survey is done.
 
 No backend. No accounts. Projects save to a JSON file you can email.
 
 ---
 
-> ## 🎉 v1.0.0 — first public release
+> ## 🚀 v2.0.0 — Cameras, heatmap, directional antennas, PoE
 >
-> NOCTIS WiFi Planner is now open source under the MIT license.
-> Pre-built bundle (40 KB zip — unzip and open `index.html`, no Node required):
-> **[Download v1.0.0](https://github.com/SP1R4/noctis-wifi-planner/releases/download/v1.0.0/noctis-wifi-planner-v1.0.0.zip)**
-> · [Release notes](https://github.com/SP1R4/noctis-wifi-planner/releases/tag/v1.0.0)
+> A meaty release that pushes NOCTIS from "WiFi coverage planner" into
+> "network/security planner". Highlights: real signal-strength heatmap,
+> IP cameras with vendor catalogs, AP antenna patterns, PoE budget,
+> wall vertex editing, multi-select, SVG wall import, shareable URLs,
+> per-floor PDF reports.
+> Pre-built bundle (unzip and open `index.html`, no Node required):
+> **[Download v2.0.0](https://github.com/SP1R4/noctis-wifi-planner/releases/download/v2.0.0/noctis-wifi-planner-v2.0.0.zip)**
+> · [Release notes](https://github.com/SP1R4/noctis-wifi-planner/releases/tag/v2.0.0)
 > · [Changelog](CHANGELOG.md)
 
 ---
 
 ## Features
 
+### Coverage modelling
 - **Wall-aware coverage** — ray-cast simulation accumulates per-material
   dB attenuation (drywall, wood, glass, brick, concrete) for every wall
   the signal crosses. Each AP renders its actual reachable polygon, not
   a naive circle.
-- **Band-aware** — 2.4 GHz, 5 GHz, and 6 GHz APs apply different wall-loss
+- **Band-aware** — 2.4 / 5 / 6 GHz APs apply different wall-loss
   multipliers because real RF doesn't care that they all use the same
   drywall.
+- **Directional antennas** — omni, ceiling-down, wall-mount, sector
+  90 / 60 / 30°. Coverage polygon is masked by the pattern + heading.
+- **Real signal-strength heatmap** — canvas-based per-pixel dBm
+  rendering with banded colours (excellent → unusable). Respects walls,
+  bands, and directional antennas.
 - **Channel overlap warnings** — APs sharing or interfering on a 2.4 GHz
-  channel get a dashed orange link with a ⚡ Ch X pill so you can spot
-  co-channel interference before it bites.
-- **Multi-floor** — each floor carries its own image, scale (m/100 px),
-  APs, switches, dead zones, walls.
-- **Vendor catalogs built in** — Ubiquiti UniFi (WiFi 5/6/7) and MikroTik
-  (ac/ax) APs and switches, with typical coverage ranges per model.
-- **Coverage % sampler** — wall-aware floor-coverage percentage for the
-  current floor plus a whole-building rollup.
-- **Undo/redo** — 50-step history with snapshot debouncing, so a slider
+  channel get a dashed orange link with a ⚡ Ch X pill.
+- **Auto-AP placement** — greedy "drop N APs to reach 92% coverage"
+  optimizer that respects existing APs and walls.
+
+### Devices on the map
+- **Access points** — Ubiquiti UniFi (WiFi 5 / 6 / 7) and MikroTik
+  (ac / ax) catalogs with per-model PoE draw and typical ranges.
+- **IP cameras** — UniFi Protect (G3 / G4 / G5 / AI), Hikvision, Dahua,
+  Reolink, and Axis catalogs. Configurable FoV / heading / range; the
+  field-of-view cone renders on the map. Press `C` to place.
+- **Switches & routers** — per-switch PoE budget. Link any AP or camera
+  to a switch and view the cable run on the map.
+- **Dead zones & walls** — drag-to-draw walls (Shift snaps to 45°),
+  multi-material, drag vertex handles to reshape after placement.
+- **SVG wall import** — drop an SVG floor plan and line / polyline /
+  polygon / path elements become walls automatically.
+
+### Network planning
+- **PoE budget** — sum draw per switch from every AP / camera assigned
+  to it; flag over-budget switches in the ⚡ PoE summary modal.
+- **Cable runs** — toggle the **Cables** view to draw lines from
+  devices to their switches with length labels (red when > 100 m).
+
+### Workflow
+- **Multi-floor** — each floor carries its own image, scale (m / 100 px),
+  APs, cameras, switches, dead zones, walls.
+- **Multi-select** — Shift-click or marquee-drag in select mode;
+  Delete clears the whole selection.
+- **Undo / redo** — 50-step history with snapshot debouncing, so a slider
   scrub collapses to one undoable step.
 - **Autosave** — silent every 10 s to localStorage; floor images live in
-  IndexedDB so the autosave payload stays tiny.
-- **HTML + PDF export** — branded report with the coverage map, AP/SW
-  tables, and per-AP technical details (IP/MAC/port/VLAN/channel/TX).
+  IndexedDB so the payload stays tiny.
+- **Shareable URL** — 🔗 Share copies a gzip + base64-encoded link that
+  re-opens the project in any browser.
+- **HTML + per-floor PDF export** — branded report with cover page,
+  per-floor maps + tables, and per-AP / per-camera technical details.
 - **Dark mode**, **presentation mode**, **keyboard shortcuts** for every
   tool, **ruler** for arbitrary distance measurements.
 - **Runs from `file://`** after `npm run build` — no server required for
@@ -103,15 +137,17 @@ files/
   styles.css         Theming + component styles
   fonts.css          Self-hosted font faces
   src/
-    geometry.js      Pure ray-cast / attenuation math (DOM-free)
-    migrate.js       Project-file schema migrations
-    constants.js     AP/SW model catalogs + colour palette
+    geometry.js      Pure ray-cast / attenuation / dBm math (DOM-free)
+    migrate.js       Project-file schema migrations (v1 → v7)
+    constants.js     AP / camera / switch catalogs + antenna patterns
+                     + PoE draw tables + heatmap colour stops
     imageStore.js    IndexedDB image storage
 tests/
-  geometry.test.js   Geometry + band-loss + fractional-wall tests
-  migrate.test.js    Schema migration tests
+  geometry.test.js   Geometry + band-loss + directional + dBm tests
+  migrate.test.js    Schema migration tests (every prior version)
 vite.config.js       Build config (relative paths for file:// portability)
 vitest.config.js     Test config (points at ./tests/)
+scripts/             OS-specific one-line installers (macOS / Ubuntu / Windows)
 ```
 
 ## How the coverage math works

@@ -737,6 +737,15 @@ body.sb-resizing iframe{pointer-events:none}
    border-radius:2px;
 }
 #sl{position:absolute;top:0;left:0;overflow:visible}
+#heat-canvas{
+  position:absolute;top:0;left:0;
+  pointer-events:none;
+  display:none;          /* shown only when heatmap toggle is on */
+  opacity:.78;
+  image-rendering:pixelated;  /* keep the per-cell colors crisp when zoomed */
+  mix-blend-mode:multiply;    /* let the floor plan show through */
+}
+body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
 
 /* AP coverage rings ── encode signal via weight + dash */
 .ap-outer{fill:rgba(0,0,0,.04);stroke:var(--sig-strong);stroke-width:1.5}
@@ -848,6 +857,50 @@ body.sb-resizing iframe{pointer-events:none}
   fill:var(--ink);font-family:'Share Tech Mono',monospace;font-size:9px;
   font-weight:700;letter-spacing:.1em;text-transform:uppercase;
   text-anchor:middle;dominant-baseline:central;
+  pointer-events:none;
+}
+
+/* Cameras — rendered as a triangular field-of-view cone with a lens marker
+   at the position and a label below. Selected cameras get a thicker stroke. */
+.cam-cone{fill:rgba(0,0,0,.07);stroke:var(--ink);stroke-width:1.2;opacity:.85;pointer-events:none}
+.cam-cone-sel{stroke-width:2;opacity:1;filter:drop-shadow(0 0 4px rgba(0,0,0,.18))}
+.cam-lens{stroke:var(--bg);stroke-width:1.5}
+.cam-lens-sel{stroke:var(--bg);stroke-width:2;filter:drop-shadow(0 0 3px rgba(0,0,0,.3))}
+.cam-heading{stroke-width:1.5;opacity:.9;pointer-events:none}
+.cam-lbl{
+  font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:700;
+  letter-spacing:.08em;text-anchor:middle;
+  paint-order:stroke;stroke:var(--bg);stroke-width:3;
+  pointer-events:none;
+}
+
+/* Cable runs — thin coloured line from each AP/camera to its assigned switch.
+   The length label flips to red when the run exceeds 100 m (PoE spec limit). */
+.cable-line{
+  stroke:#1565c0;stroke-width:1.4;opacity:.55;
+  stroke-dasharray:4 3;fill:none;
+  pointer-events:none;
+}
+.cable-lbl{
+  font-family:'Share Tech Mono',monospace;font-size:9px;font-weight:700;
+  fill:#1565c0;text-anchor:middle;
+  paint-order:stroke;stroke:var(--bg);stroke-width:2.5;
+  pointer-events:none;
+}
+.cable-lbl-warn{fill:#c0382b}
+
+/* Wall vertex handles — drawn on each endpoint of the selected wall so the
+   user can drag them to reshape after placement. */
+.wall-vert{
+  fill:var(--bg);stroke:var(--ink);stroke-width:1.8;
+  cursor:grab;
+}
+.wall-vert:hover{fill:var(--ink);stroke:var(--bg)}
+
+/* Marquee multi-select rectangle */
+.marquee-rect{
+  fill:rgba(21,101,192,.08);
+  stroke:#1565c0;stroke-width:1;stroke-dasharray:4 3;
   pointer-events:none;
 }
 

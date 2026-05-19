@@ -1,6 +1,6 @@
 {
   "name": "noctis-wifi-planner",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Single-page WiFi coverage planner — drop a floor plan, place access points, draw walls of different materials, and get a wall-aware ray-cast coverage simulation. Multi-floor, band-aware (2.4/5/6 GHz), HTML/PDF export.",
   "private": false,
   "type": "module",

@@ -7,6 +7,7 @@ import {
   wallToPx,
   computeCoveragePath as _computeCoveragePath,
   sampleFloorCoverage as _sampleFloorCoverage,
+  dbmAt,
 } from './src/geometry.js';
 import {
   migrateProject,
@@ -19,6 +20,9 @@ import {
   AP_MODEL_GROUPS, MODELS, AP_RANGE_M,
   SW_MODEL_GROUPS, SW_MODELS,
   WALL_MATERIAL_KEYS, AP_COLORS,
+  AP_PATTERNS, AP_PATTERN_KEYS, AP_POE_W,
+  CAM_MODEL_GROUPS, CAM_MODELS, CAM_SPECS,
+  HEATMAP_STOPS,
 } from './src/constants.js';
 import {
   idbPutImage, idbGetImage, idbDeleteImage,
@@ -38,15 +42,24 @@ import {
 // AP position/radius change. The actual ray-cast lives in geometry.js.
 const COVERAGE_RAYS=72;   // one ray every 5°.
 
+function _apPatternOpts(ap){
+  const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
+  return {
+    rays:COVERAGE_RAYS,
+    bandFactor:bandLossMultiplier(ap.freq),
+    arcDeg:pat.arc,
+    headingDeg:ap.heading||0,
+  };
+}
 function computeCoveragePath(ap){
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
-  return _computeCoveragePath(ap,w,h,WALLS(),{rays:COVERAGE_RAYS,bandFactor:bandLossMultiplier(ap.freq)});
+  return _computeCoveragePath(ap,w,h,WALLS(),_apPatternOpts(ap));
 }
 
 // Cache lookups — both outer (full r) and inner (r * 0.54) coverage paths are
 // memoized on the AP. Cache fields are prefixed `_` so the save/autosave
 // stripper drops them, keeping JSON small and avoiding stale cache resurrection.
-function _cacheKey(ap,r){return `${ap.fx},${ap.fy},${r},${ap.freq||''},${WALLS().length},${_wallsCacheKey}`;}
+function _cacheKey(ap,r){return `${ap.fx},${ap.fy},${r},${ap.freq||''},${ap.pattern||''},${ap.heading||0},${WALLS().length},${_wallsCacheKey}`;}
 function getCoveragePath(ap){
   const key=_cacheKey(ap,ap.r);
   if(ap._coveragePath&&ap._coverageFor===key)return ap._coveragePath;
@@ -59,7 +72,7 @@ function getInnerCoveragePath(ap){
   const innerR=ap.r*.54;
   const key=_cacheKey(ap,innerR);
   if(ap._innerCoveragePath&&ap._innerCoverageFor===key)return ap._innerCoveragePath;
-  const path=computeCoveragePath({fx:ap.fx,fy:ap.fy,r:innerR,freq:ap.freq});
+  const path=computeCoveragePath({fx:ap.fx,fy:ap.fy,r:innerR,freq:ap.freq,pattern:ap.pattern,heading:ap.heading});
   ap._innerCoveragePath=path;
   ap._innerCoverageFor=key;
   return path;
@@ -128,9 +141,10 @@ function buildGroupedOptions(groups,selected){
 }
 const HINTS={
   add: 'Click map to place an AP',
-  sel: 'Click an item to select · drag to move · Shift+click to duplicate',
+  sel: 'Click an item to select · Shift+click to add to selection · drag to move',
   dz:  'Click to mark a dead zone',
   sw:  'Click to place a switch or router',
+  cam: 'Click to place a camera · rotate via heading slider in the panel',
   ruler:'Click two points to measure · Esc to clear',
   wall:'Click two points to draw a wall · Shift for 45° · Esc to cancel'
 };
@@ -144,7 +158,7 @@ const HINTS={
 let SETTINGS={...DEFAULT_SETTINGS};
 
 // ═══ STATE ════════════════════════════════════════
-let FLOORS=[{id:'f1',name:'Floor 1',img:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],scaleM:100}];
+let FLOORS=[{id:'f1',name:'Floor 1',img:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],scaleM:100}];
 let curFloor=0;
 let nid=1;
 let mode='add';
@@ -186,17 +200,22 @@ const APS=()=>F().APS;
 const DZS=()=>F().DZS;
 const SWS=()=>F().SWS;
 const WALLS=()=>F().WALLS||(F().WALLS=[]);
+const CAMS=()=>F().CAMS||(F().CAMS=[]);
 
 // ═══ DOM ══════════════════════════════════════════
 const viewport=document.getElementById('vp'),canvas=document.getElementById('cv'),mapImg=document.getElementById('mi');
 const svgLayer=document.getElementById('sl');
 const apLayer=document.getElementById('ap-layer'),dzLayer=document.getElementById('dz-layer');
 const swLayer=document.getElementById('sw-layer');
+const camLayer=document.getElementById('cam-layer');
 const olLayer=document.getElementById('ol-layer'),heatLayer=document.getElementById('heat-layer');
+const heatCanvas=document.getElementById('heat-canvas');
 const gridLayer=document.getElementById('grid-layer');
 const rulerLayer=document.getElementById('ruler-layer');
 const wallLayer=document.getElementById('wall-layer');
+const cableLayer=document.getElementById('cable-layer');
 const chOverlapLayer=document.getElementById('ch-overlap-layer');
+const marqueeLayer=document.getElementById('marquee-layer');
 // Minimap was removed. These references are kept as nulls so the rest of the
 // codebase doesn't need changes; renderMM is a no-op below, and mmImg.src
 // assignments are guarded with `if(mmImg)` checks throughout.
@@ -295,7 +314,7 @@ function addFloor(){
   // New floors inherit the current floor's scale as a sensible default — the
   // user can override per-floor afterwards.
   const inheritedScale=F()?.scaleM||100;
-  FLOORS.push({id:'f'+(++nid),name:defaultName,img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],scaleM:inheritedScale});
+  FLOORS.push({id:'f'+(++nid),name:defaultName,img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],scaleM:inheritedScale});
   switchFloor(FLOORS.length-1);
   toast('Floor added');
   // Immediately enter rename mode on the new tab so user can pick a real name
@@ -369,6 +388,353 @@ function uploadMap(input){
 }
 // onload handled in loadFloorImage()
 
+// ═══ AUTO-AP PLACEMENT ════════════════════════════
+// Greedy coverage maximization: pick a sparse grid of candidate positions,
+// then iteratively place an AP at whichever candidate covers the most
+// currently-uncovered points. Stop when target % is reached or max APs hit.
+// Not optimal in the strict NP-hard sense; good enough in practice and
+// finishes in well under a second for realistic floor sizes.
+function autoPlaceAPs(){
+  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
+  if(!w||!h){toast('Upload a map first');return;}
+  const model=AP_RANGE_M[SETTINGS.lastModel]?SETTINGS.lastModel:'U6 Pro';
+  const r=rangeMToPx(AP_RANGE_M[model]);
+  // Build a sample grid (the same one sampleFloorCoverage uses, conceptually).
+  const step=Math.max(6,Math.round(Math.min(w,h)/80));
+  const samples=[];
+  for(let y=0;y<h;y+=step)for(let x=0;x<w;x+=step)samples.push({x,y,covered:false});
+  // Mark already-covered points by existing APs so we don't double-count.
+  const walls=WALLS();
+  const existing=APS();
+  for(const ap of existing){
+    const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
+    const bf=bandLossMultiplier(ap.freq);
+    for(const s of samples){
+      if(s.covered)continue;
+      const d=dbmAt(ap,s.x,s.y,w,h,walls,{bandFactor:bf,arcDeg:pat.arc,headingDeg:ap.heading||0});
+      if(d!==null)s.covered=true;
+    }
+  }
+  // Candidate positions: a sparser grid than the sample grid.
+  const candStep=Math.max(step*2,Math.round(Math.min(w,h)/30));
+  const candidates=[];
+  for(let y=candStep/2;y<h;y+=candStep)for(let x=candStep/2;x<w;x+=candStep){
+    candidates.push({x,y});
+  }
+  // We treat a candidate AP as an "omni AP at default range" for placement
+  // scoring. Once placed, the user can fine-tune.
+  const placedNow=[];
+  const TARGET=0.92, MAX_APS=12;
+  // Helper: which samples a candidate would cover.
+  const candidateCovers=(cx,cy)=>{
+    const fakeAp={fx:cx/w,fy:cy/h,r,freq:'2.4 / 5 GHz',pattern:'omni',heading:0};
+    const out=[];
+    for(let i=0;i<samples.length;i++){
+      const s=samples[i];
+      if(s.covered)continue;
+      // Cheap distance check first; only do dbmAt if within radius.
+      if(Math.hypot(s.x-cx,s.y-cy)>r)continue;
+      const d=dbmAt(fakeAp,s.x,s.y,w,h,walls,{bandFactor:0.6});
+      if(d!==null)out.push(i);
+    }
+    return out;
+  };
+  const coveredCount=()=>{let n=0;for(const s of samples)if(s.covered)n++;return n;};
+  snapshot();
+  while(placedNow.length<MAX_APS && coveredCount()/samples.length<TARGET){
+    let bestIdx=-1,bestGain=-1,bestCovers=null;
+    for(let i=0;i<candidates.length;i++){
+      const c=candidates[i];
+      if(c.used)continue;
+      const covers=candidateCovers(c.x,c.y);
+      if(covers.length>bestGain){bestGain=covers.length;bestIdx=i;bestCovers=covers;}
+    }
+    if(bestIdx<0||bestGain<=0)break;
+    candidates[bestIdx].used=true;
+    for(const i of bestCovers)samples[i].covered=true;
+    // Place the AP for real.
+    const c=candidates[bestIdx];
+    const id='ap'+nid++;
+    const num=nextNameSuffix(APS(),/^AP-(\d+)/);
+    APS().push({id,name:'AP-'+String(num).padStart(2,'0'),model,freq:'2.4 / 5 GHz',channel:'auto',txPower:'auto',sig:'strong',color:'',ip:'',mac:'',swId:'',port:'',vlan:'',notes:'',fx:c.x/w,fy:c.y/h,r,pattern:'omni',heading:0,locked:false});
+    placedNow.push(id);
+  }
+  invalidateCoverageCache();
+  render();renderList();renderRP();calcCoverage();
+  if(placedNow.length){
+    const pct=Math.round(coveredCount()/samples.length*100);
+    toast(`Placed ${placedNow.length} ${model} AP${placedNow.length===1?'':'s'} — ${pct}% coverage`);
+  }else{
+    toast('Already at target coverage — nothing to place');
+  }
+}
+
+// ═══ POE BUDGET SUMMARY ═══════════════════════════
+// Walk every switch, sum the PoE draw from each AP/camera assigned to it
+// (using AP_POE_W and CAM_SPECS.poeW catalogs), compare against the
+// per-switch budget. Display a small modal summary.
+function showPoESummary(){
+  const rows=[];
+  let totalDraw=0,totalBudget=0;
+  SWS().forEach(sw=>{
+    let draw=0;
+    const assigned=[];
+    APS().forEach(ap=>{
+      if(ap.swId===sw.id){draw+=AP_POE_W[ap.model]||10;assigned.push({name:ap.name,model:ap.model,w:AP_POE_W[ap.model]||10,type:'AP'});}
+    });
+    CAMS().forEach(c=>{
+      if(c.swId===sw.id){const w=(CAM_SPECS[c.model]||{}).poeW||0;draw+=w;assigned.push({name:c.name,model:c.model,w,type:'CAM'});}
+    });
+    const budget=sw.poeBudget||0;
+    totalDraw+=draw;totalBudget+=budget;
+    rows.push({sw,draw,budget,assigned});
+  });
+  const wrap=document.createElement('div');
+  wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+  if(!rows.length){
+    wrap.textContent='No switches placed yet. Drop a switch on the map (W) then assign APs/cameras to it.';
+    showModalNode('PoE Budget',wrap,null);
+    return;
+  }
+  for(const r of rows){
+    const sec=document.createElement('div');sec.style.cssText='margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid rgba(0,0,0,.08)';
+    const over=r.budget>0 && r.draw>r.budget;
+    const head=document.createElement('div');head.style.cssText='display:flex;justify-content:space-between;font-weight:600;margin-bottom:4px';
+    head.innerHTML=`<span>${esc(r.sw.name)} <span style="font-family:'Share Tech Mono';font-size:10px;opacity:.6">${esc(r.sw.model||'')}</span></span>
+      <span style="font-family:'Share Tech Mono';color:${over?'#c0382b':'#1e7d3c'}">${r.draw.toFixed(1)} W${r.budget>0?` / ${r.budget} W`:''}</span>`;
+    sec.appendChild(head);
+    if(!r.assigned.length){
+      const empty=document.createElement('div');empty.style.cssText='font-size:11px;opacity:.6;font-style:italic';empty.textContent='No devices assigned.';
+      sec.appendChild(empty);
+    }else{
+      for(const a of r.assigned){
+        const li=document.createElement('div');li.style.cssText='display:flex;justify-content:space-between;font-size:11px;padding:2px 8px;opacity:.8';
+        li.innerHTML=`<span>${a.type==='AP'?'●':'◉'} ${esc(a.name)} <span style="opacity:.5">${esc(a.model)}</span></span><span style="font-family:'Share Tech Mono'">${a.w} W</span>`;
+        sec.appendChild(li);
+      }
+    }
+    if(over){
+      const warn=document.createElement('div');warn.style.cssText='font-size:11px;color:#c0382b;margin-top:4px;font-weight:600';
+      warn.textContent='⚠ Draw exceeds budget — switch may shut down PoE on lower-priority ports.';
+      sec.appendChild(warn);
+    }
+    wrap.appendChild(sec);
+  }
+  const total=document.createElement('div');total.style.cssText='margin-top:8px;padding-top:8px;border-top:1px solid #000;font-weight:600;display:flex;justify-content:space-between';
+  total.innerHTML=`<span>Total</span><span style="font-family:'Share Tech Mono'">${totalDraw.toFixed(1)} W${totalBudget>0?` / ${totalBudget} W`:''}</span>`;
+  wrap.appendChild(total);
+  const hint=document.createElement('div');hint.style.cssText='margin-top:10px;font-size:10px;opacity:.55';
+  hint.textContent='PoE budgets are set per switch in the switch properties panel.';
+  wrap.appendChild(hint);
+  showModalNode('PoE Budget',wrap,null);
+}
+
+// ═══ SHARE LINK ═══════════════════════════════════
+// Encode the current project into the URL hash, compressed with gzip when
+// the browser supports CompressionStream, then base64url-encoded so it's
+// safe to drop in a chat message. Floor-plan images are intentionally
+// stripped — they'd inflate the URL well past every browser's address-bar
+// length limit. Recipients see the project structure and re-upload the map
+// themselves.
+async function _b64urlFromBytes(bytes){
+  let s='';for(let i=0;i<bytes.length;i++)s+=String.fromCharCode(bytes[i]);
+  return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function _bytesFromB64url(s){
+  s=s.replace(/-/g,'+').replace(/_/g,'/');
+  while(s.length%4)s+='=';
+  const bin=atob(s);
+  const out=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++)out[i]=bin.charCodeAt(i);
+  return out;
+}
+async function _gzip(text){
+  if(typeof CompressionStream==='undefined'){
+    // Plain text path — bigger URL but functional.
+    return new TextEncoder().encode(text);
+  }
+  const cs=new CompressionStream('gzip');
+  const writer=cs.writable.getWriter();
+  writer.write(new TextEncoder().encode(text));writer.close();
+  const reader=cs.readable.getReader();
+  const chunks=[];let len=0;
+  while(true){
+    const {value,done}=await reader.read();
+    if(done)break;
+    chunks.push(value);len+=value.length;
+  }
+  const out=new Uint8Array(len);let p=0;
+  for(const c of chunks){out.set(c,p);p+=c.length;}
+  return out;
+}
+async function _gunzip(bytes){
+  if(typeof DecompressionStream==='undefined'){
+    return new TextDecoder().decode(bytes);
+  }
+  const ds=new DecompressionStream('gzip');
+  const writer=ds.writable.getWriter();writer.write(bytes);writer.close();
+  const reader=ds.readable.getReader();
+  const chunks=[];let len=0;
+  while(true){
+    const {value,done}=await reader.read();
+    if(done)break;
+    chunks.push(value);len+=value.length;
+  }
+  const out=new Uint8Array(len);let p=0;
+  for(const c of chunks){out.set(c,p);p+=c.length;}
+  return new TextDecoder().decode(out);
+}
+async function shareLink(){
+  try{
+    // Strip floor-plan images so the encoded payload stays small.
+    const floorsForLink=FLOORS.map(f=>{const o={...f};delete o.img;delete o.imgId;return o;});
+    const data={version:PROJECT_VERSION,settings:SETTINGS,floors:floorsForLink};
+    const json=JSON.stringify(data,_stripCacheReplacer);
+    const bytes=await _gzip(json);
+    const b64=await _b64urlFromBytes(bytes);
+    const url=`${location.origin}${location.pathname}#p=${b64}`;
+    if(url.length>8000){
+      toast('Project too large for a URL — use 💾 Save instead');
+      return;
+    }
+    try{
+      await navigator.clipboard.writeText(url);
+      toast('Share link copied to clipboard (no floor-plan image)');
+    }catch{
+      // Clipboard blocked (insecure context, perms). Show the URL in a modal.
+      const wrap=document.createElement('div');
+      const p=document.createElement('p');p.textContent='Copy this link:';
+      const ta=document.createElement('textarea');
+      ta.value=url;ta.rows=4;ta.style.cssText='width:100%;font-family:monospace;font-size:11px';
+      ta.addEventListener('focus',()=>ta.select());
+      wrap.appendChild(p);wrap.appendChild(ta);
+      showModalNode('Share link',wrap,null);
+      setTimeout(()=>ta.select(),50);
+    }
+  }catch(err){
+    toast('Share failed: '+(err.message||'unknown error'));
+  }
+}
+async function tryLoadFromHash(){
+  const m=/^#p=(.+)$/.exec(location.hash||'');
+  if(!m)return false;
+  try{
+    const bytes=_bytesFromB64url(m[1]);
+    const json=await _gunzip(bytes);
+    const raw=JSON.parse(json);
+    const [data,warnings]=migrateProject(raw);
+    FLOORS=data.floors;
+    SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
+    curFloor=0;selId=null;selType=null;
+    syncScaleFromFloor();syncNidFromFloors();
+    applySettingsToBrand();
+    loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
+    // Strip the hash so a reload doesn't keep loading the same project.
+    history.replaceState(null,'',location.pathname+location.search);
+    toast(warnings.length?warnings[0]:'Project loaded from link');
+    return true;
+  }catch(err){
+    toast('Could not decode shared link');
+    return false;
+  }
+}
+
+// ═══ SVG WALL IMPORT ══════════════════════════════
+// Architects ship floor plans as SVG more often than not — parsing the line
+// primitives directly saves users an enormous amount of manual click-clicking.
+// We accept <line>, <polyline>, <polygon>, and the line-like subset of <path>.
+function importSvgWalls(input){
+  const file=input.files[0];if(!file)return;
+  if(!mapImg.naturalWidth){toast('Upload a floor-plan image first so we know the scale');input.value='';return;}
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      const text=e.target.result;
+      const doc=new DOMParser().parseFromString(text,'image/svg+xml');
+      const svg=doc.querySelector('svg');
+      if(!svg)throw new Error('No <svg> root found');
+      // Determine the SVG's intrinsic coordinate system.
+      const vb=(svg.getAttribute('viewBox')||'').trim().split(/\s+|,/).map(parseFloat);
+      let vbX=0,vbY=0,vbW,vbH;
+      if(vb.length===4&&vb.every(Number.isFinite)){[vbX,vbY,vbW,vbH]=vb;}
+      else{
+        vbW=parseFloat(svg.getAttribute('width'))||100;
+        vbH=parseFloat(svg.getAttribute('height'))||100;
+      }
+      const segs=[];
+      const pushSeg=(x1,y1,x2,y2)=>{
+        if(!Number.isFinite(x1)||!Number.isFinite(y1)||!Number.isFinite(x2)||!Number.isFinite(y2))return;
+        if(Math.hypot(x2-x1,y2-y1)<1)return;
+        segs.push([x1,y1,x2,y2]);
+      };
+      doc.querySelectorAll('line').forEach(el=>{
+        pushSeg(+el.getAttribute('x1')||0,+el.getAttribute('y1')||0,+el.getAttribute('x2')||0,+el.getAttribute('y2')||0);
+      });
+      const splitPts=s=>(s||'').trim().split(/\s+|,/).filter(Boolean).map(parseFloat);
+      doc.querySelectorAll('polyline,polygon').forEach(el=>{
+        const pts=splitPts(el.getAttribute('points'));
+        const closed=el.tagName.toLowerCase()==='polygon';
+        for(let i=0;i+3<pts.length;i+=2){
+          pushSeg(pts[i],pts[i+1],pts[i+2],pts[i+3]);
+        }
+        if(closed&&pts.length>=4){
+          pushSeg(pts[pts.length-2],pts[pts.length-1],pts[0],pts[1]);
+        }
+      });
+      // Very lightweight path parser — only honours M/L/H/V/Z (absolute & relative).
+      // Curves and arcs are skipped (we'd need full bezier sampling otherwise).
+      doc.querySelectorAll('path').forEach(el=>{
+        const d=el.getAttribute('d')||'';
+        const tokens=d.match(/[MmLlHhVvZz]|-?\d*\.?\d+(?:[eE][+-]?\d+)?/g)||[];
+        let i=0,cx=0,cy=0,sx=0,sy=0,cmd='M';
+        while(i<tokens.length){
+          const t=tokens[i];
+          if(/[A-Za-z]/.test(t)){cmd=t;i++;continue;}
+          const isRel=cmd===cmd.toLowerCase();
+          if(cmd==='M'||cmd==='m'){
+            const x=parseFloat(tokens[i++]),y=parseFloat(tokens[i++]);
+            const nx=isRel?cx+x:x, ny=isRel?cy+y:y;
+            cx=nx;cy=ny;sx=nx;sy=ny;cmd=isRel?'l':'L';
+          }else if(cmd==='L'||cmd==='l'){
+            const x=parseFloat(tokens[i++]),y=parseFloat(tokens[i++]);
+            const nx=isRel?cx+x:x, ny=isRel?cy+y:y;
+            pushSeg(cx,cy,nx,ny);cx=nx;cy=ny;
+          }else if(cmd==='H'||cmd==='h'){
+            const x=parseFloat(tokens[i++]);
+            const nx=isRel?cx+x:x;
+            pushSeg(cx,cy,nx,cy);cx=nx;
+          }else if(cmd==='V'||cmd==='v'){
+            const y=parseFloat(tokens[i++]);
+            const ny=isRel?cy+y:y;
+            pushSeg(cx,cy,cx,ny);cy=ny;
+          }else if(cmd==='Z'||cmd==='z'){
+            pushSeg(cx,cy,sx,sy);cx=sx;cy=sy;
+          }else{
+            // Unsupported command (curves/arcs) — skip its numeric args.
+            i++;
+          }
+        }
+      });
+      if(!segs.length){toast('No line segments found in that SVG');return;}
+      // Map SVG viewBox coords → fractional image coords.
+      snapshot();
+      const imgW=mapImg.naturalWidth,imgH=mapImg.naturalHeight;
+      for(const [x1,y1,x2,y2] of segs){
+        const fx1=(x1-vbX)/vbW, fy1=(y1-vbY)/vbH;
+        const fx2=(x2-vbX)/vbW, fy2=(y2-vbY)/vbH;
+        WALLS().push({id:'w'+(++nid),fx1,fy1,fx2,fy2,material:'drywall'});
+      }
+      invalidateCoverageCache();
+      render();renderList();calcCoverage();
+      toast(`Imported ${segs.length} walls from SVG`);
+    }catch(err){
+      toast('SVG import failed: '+(err.message||'invalid SVG'));
+    }
+  };
+  reader.readAsText(file);
+  input.value='';
+}
+
 // ═══ SAVE / LOAD PROJECT ══════════════════════════
 // PROJECT_VERSION, migrateProject, syncNidFromFloors, nextNameSuffix all
 // imported from ./src/migrate.js. See top of file.
@@ -407,7 +773,7 @@ function newProject(){
     // Mutate FLOORS in place rather than reassigning the binding — this keeps
     // any existing references (tests, inspector debugging, closures) valid.
     FLOORS.length=0;
-    FLOORS.push({id:'f1',name:'Floor 1',img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],scaleM:100});
+    FLOORS.push({id:'f1',name:'Floor 1',img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],scaleM:100});
     curFloor=0;selId=null;selType=null;nid=1;
     syncScaleFromFloor();
     try{localStorage.removeItem(AUTOSAVE_KEY);}catch(_){}
@@ -555,6 +921,11 @@ viewport.addEventListener('pointerdown',e=>{
   // Middle-click / right-click / space+click = pan
   if(e.button===1||e.button===2||(e.button===0&&spaceDown)){
     e.preventDefault();panning=true;panStartX=e.clientX;panStartY=e.clientY;panPrevX=panX;panPrevY=panY;viewport.classList.add('cur-grabbing');
+    return;
+  }
+  // Left-click on empty canvas in select mode — start a marquee drag.
+  if(e.button===0&&mode==='sel'&&!e.target.closest('.ap-grp,.dz-grp,.sw-grp,.cam-grp,.cam-lens,.wall-line,.wall-vert')){
+    startMarquee(e.clientX,e.clientY,e.shiftKey);
   }
 });
 viewport.addEventListener('contextmenu',e=>{
@@ -566,16 +937,31 @@ viewport.addEventListener('contextmenu',e=>{
   if(apGroup){openItemContextMenu('ap',apGroup.dataset.id,e.clientX,e.clientY);return;}
   if(dzGroup){openItemContextMenu('dz',dzGroup.dataset.id,e.clientX,e.clientY);return;}
   if(swGroup){openItemContextMenu('sw',swGroup.dataset.id,e.clientX,e.clientY);return;}
+  const camLens=e.target.closest('.cam-grp,.cam-lens');
+  if(camLens){
+    const grp=camLens.closest('.cam-grp');
+    const id=(grp&&grp.dataset.id)||camLens.dataset.id;
+    if(id)openItemContextMenu('cam',id,e.clientX,e.clientY);
+    return;
+  }
 });
 document.addEventListener('pointermove',e=>{
   if(panning){panX=panPrevX+(e.clientX-panStartX);panY=panPrevY+(e.clientY-panStartY);applyT();return;}
+  if(wallVertDrag){updateWallVertex(e.clientX,e.clientY);return;}
+  if(marqueeDrag){updateMarquee(e.clientX,e.clientY);return;}
   if(dragId)doDrag(e.clientX,e.clientY);
   if(resId)doResize(e.clientX);
   if(mode==='ruler'&&rulerStart&&!rulerEnd)updateRuler(e.clientX,e.clientY);
   if(mode==='wall'&&wallStart)updateWallPreview(e.clientX,e.clientY,e.shiftKey);
 });
-document.addEventListener('pointerup',()=>{activePointers=Math.max(0,activePointers-1);panning=false;viewport.classList.remove('cur-grabbing');endDrag();resId=null;});
-document.addEventListener('pointercancel',()=>{activePointers=0;panning=false;viewport.classList.remove('cur-grabbing');endDrag();resId=null;});
+document.addEventListener('pointerup',()=>{
+  activePointers=Math.max(0,activePointers-1);
+  panning=false;viewport.classList.remove('cur-grabbing');
+  if(wallVertDrag){wallVertDrag=null;render();calcCoverage();}
+  if(marqueeDrag){finishMarquee();}
+  endDrag();resId=null;
+});
+document.addEventListener('pointercancel',()=>{activePointers=0;panning=false;viewport.classList.remove('cur-grabbing');wallVertDrag=null;if(marqueeDrag)finishMarquee();endDrag();resId=null;});
 
 let lastPD=0;
 viewport.addEventListener('touchstart',e=>{if(e.touches.length===2)lastPD=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);},{passive:true});
@@ -678,8 +1064,8 @@ function setMode(m){
   if(m!=='ruler'){rulerStart=null;renderRuler();}
   // Clear any in-progress wall when leaving wall mode
   if(m!=='wall'){wallStart=null;wallHover=null;renderWallPreview();}
-  ['add','sel','dz','sw','ruler','wall'].forEach(mm=>document.getElementById('btn-'+mm)?.classList.toggle('active',mm===m));
-  viewport.className=m==='sel'?'':m==='dz'?'cur-cell':m==='sw'?'cur-cell':'cur-cross';
+  ['add','sel','dz','sw','cam','ruler','wall'].forEach(mm=>document.getElementById('btn-'+mm)?.classList.toggle('active',mm===m));
+  viewport.className=m==='sel'?'':m==='dz'?'cur-cell':m==='sw'?'cur-cell':m==='cam'?'cur-cell':'cur-cross';
   // Hint pill: show prominently for 3.5s on mode change, then fade to background.
   // The auto-fade keeps it visible enough to consult but unobtrusive while you work.
   const hintEl=document.getElementById('hint-bar');
@@ -720,8 +1106,22 @@ viewport.addEventListener('click',e=>{
     snapshot();
     const id='sw'+nid++;
     const num=nextNameSuffix(SWS(),/^SW-(\d+)/);
-    SWS().push({id,name:'SW-'+num,model:'USW-24-PoE',ip:'',notes:'',fx,fy,size:22,locked:false});
+    SWS().push({id,name:'SW-'+num,model:'USW-24-PoE',ip:'',notes:'',fx,fy,size:22,locked:false,poeBudget:0});
     sel(id,'sw');setMode('sel');render();renderList();toast('Switch placed');
+  }else if(mode==='cam'){
+    snapshot();
+    const id='cm'+nid++;
+    const num=nextNameSuffix(CAMS(),/^CAM-(\d+)/);
+    const model=SETTINGS.lastCamModel&&CAM_SPECS[SETTINGS.lastCamModel]?SETTINGS.lastCamModel:'G4 Pro';
+    const spec=CAM_SPECS[model]||CAM_SPECS['Custom/Other'];
+    CAMS().push({
+      id,name:'CAM-'+String(num).padStart(2,'0'),model,
+      fx,fy,
+      fov:spec.fov, range:Math.round(spec.range*100/(scaleM||100)),
+      heading:0, resolution:spec.res,
+      ip:'',mac:'',swId:'',port:'',vlan:'',notes:'',color:'',locked:false,
+    });
+    sel(id,'cam');setMode('sel');render();renderList();toast('Camera placed — set heading in panel');
   }else if(mode==='ruler'){
     if(!rulerStart){
       rulerStart={x,y};rulerEnd=null;rulerHover={x,y};
@@ -751,6 +1151,7 @@ function getItemCenter(type,id){
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
   if(type==='ap'){const ap=APS().find(a=>a.id===id);return ap?{x:ap.fx*w,y:ap.fy*h}:null;}
   if(type==='sw'){const sw=SWS().find(a=>a.id===id);return sw?{x:sw.fx*w,y:sw.fy*h}:null;}
+  if(type==='cam'){const c=CAMS().find(a=>a.id===id);return c?{x:c.fx*w,y:c.fy*h}:null;}
   if(type==='dz'){const dz=DZS().find(a=>a.id===id);return dz?{x:dz.fx*w,y:dz.fy*h}:null;}
   if(type==='wall'){const wl=WALLS().find(a=>a.id===id);if(!wl)return null;const p=_wallPx(wl);return {x:(p.x1+p.x2)/2,y:(p.y1+p.y2)/2};}
   return null;
@@ -762,6 +1163,7 @@ function getItemBounds(type,id){
   if(type==='ap'){const ap=APS().find(a=>a.id===id);return ap?{x:ap.fx*w-ap.r,y:ap.fy*h-ap.r,w:ap.r*2,h:ap.r*2}:null;}
   if(type==='dz'){const dz=DZS().find(a=>a.id===id);return dz?{x:dz.fx*w-dz.r,y:dz.fy*h-dz.r,w:dz.r*2,h:dz.r*2}:null;}
   if(type==='sw'){const sw=SWS().find(a=>a.id===id);if(!sw)return null;const sz=sw.size||22;return {x:sw.fx*w-sz,y:sw.fy*h-sz*.6,w:sz*2,h:sz*1.2};}
+  if(type==='cam'){const c=CAMS().find(a=>a.id===id);if(!c)return null;const r=c.range||80;return {x:c.fx*w-r,y:c.fy*h-r,w:r*2,h:r*2};}
   if(type==='wall'){const wl=WALLS().find(a=>a.id===id);if(!wl)return null;const p=_wallPx(wl);const x=Math.min(p.x1,p.x2),y=Math.min(p.y1,p.y2);return {x,y,w:Math.abs(p.x2-p.x1)+1,h:Math.abs(p.y2-p.y1)+1};}
   return null;
 }
@@ -871,9 +1273,115 @@ function renderWalls(){
       lbl.setAttribute('class','wall-lbl');
       lbl.textContent=mat.label;
       wallLayer.appendChild(lbl);
+
+      // Vertex handles — drag to reshape the wall endpoints in place.
+      // Stored fractional coords mean we can update fx1/fy1 directly.
+      const mkVert=(ex,ey,endpoint)=>{
+        const v=mk('circle');
+        v.setAttribute('cx',ex);v.setAttribute('cy',ey);v.setAttribute('r',6);
+        v.setAttribute('class','wall-vert');
+        v.dataset.wallId=w.id;v.dataset.endpoint=endpoint;
+        v.style.pointerEvents='all';
+        v.addEventListener('pointerdown',e=>{
+          e.stopPropagation();
+          wallVertDrag={wallId:w.id,endpoint};
+          snapshot();
+        });
+        wallLayer.appendChild(v);
+      };
+      mkVert(px.x1,px.y1,'a');
+      mkVert(px.x2,px.y2,'b');
     }
   });
   renderWallPreview();
+}
+
+// Wall-vertex drag state — set when the user grabs an endpoint handle.
+let wallVertDrag=null;
+
+// Marquee multi-select: in select mode, click-drag on empty map starts a
+// rectangle; on release, every item whose centre lies inside is selected.
+// Shift-drag adds to the existing selection; plain drag replaces it.
+let marqueeDrag=null;  // {startImg:{x,y}, addToExisting:bool}
+function startMarquee(cx,cy,shift){
+  const p=vpToImg(cx,cy);
+  marqueeDrag={start:{x:p.x,y:p.y},end:{x:p.x,y:p.y},additive:!!shift};
+  renderMarquee();
+}
+function updateMarquee(cx,cy){
+  if(!marqueeDrag)return;
+  const p=vpToImg(cx,cy);
+  marqueeDrag.end={x:p.x,y:p.y};
+  renderMarquee();
+}
+function renderMarquee(){
+  marqueeLayer.innerHTML='';
+  if(!marqueeDrag)return;
+  const {start,end}=marqueeDrag;
+  const x=Math.min(start.x,end.x),y=Math.min(start.y,end.y);
+  const w=Math.abs(end.x-start.x),h=Math.abs(end.y-start.y);
+  if(w<2&&h<2)return;
+  const r=mk('rect');
+  r.setAttribute('x',x);r.setAttribute('y',y);r.setAttribute('width',w);r.setAttribute('height',h);
+  r.setAttribute('class','marquee-rect');
+  marqueeLayer.appendChild(r);
+}
+function finishMarquee(){
+  if(!marqueeDrag){marqueeLayer.innerHTML='';return;}
+  const {start,end,additive}=marqueeDrag;
+  marqueeDrag=null;marqueeLayer.innerHTML='';
+  const imgW=mapImg.naturalWidth||1,imgH=mapImg.naturalHeight||1;
+  const x0=Math.min(start.x,end.x),y0=Math.min(start.y,end.y);
+  const x1=Math.max(start.x,end.x),y1=Math.max(start.y,end.y);
+  const w=x1-x0,h=y1-y0;
+  // Treat a near-zero drag as just a click — don't clobber selection.
+  if(w<3&&h<3){renderRP();return;}
+  const inside=(fx,fy)=>{
+    const px=fx*imgW,py=fy*imgH;
+    return px>=x0&&px<=x1&&py>=y0&&py<=y1;
+  };
+  if(!additive)selection.clear();
+  for(const ap of APS()) if(inside(ap.fx,ap.fy))selection.add(_selKey(ap.id,'ap'));
+  for(const sw of SWS()) if(inside(sw.fx,sw.fy))selection.add(_selKey(sw.id,'sw'));
+  for(const c  of CAMS())if(inside(c.fx,c.fy)) selection.add(_selKey(c.id,'cam'));
+  for(const dz of DZS()) if(inside(dz.fx,dz.fy))selection.add(_selKey(dz.id,'dz'));
+  // Promote the first one we found as primary, so a properties panel renders.
+  const first=selection.values().next().value;
+  if(first){[selType,selId]=first.split(':');}else{selId=null;selType=null;}
+  render();renderList();renderRP();
+  if(selection.size>1)toast(`${selection.size} items selected`);
+}
+
+// Bulk-delete every currently selected item. Used by Delete/Backspace when
+// the selection has more than one entry, and by a future right-click menu.
+function deleteSelection(){
+  if(!selection.size)return;
+  snapshot();
+  // Iterate over a snapshot so we can mutate the underlying arrays freely.
+  const targets=Array.from(selection,k=>{const i=k.indexOf(':');return {type:k.slice(0,i),id:k.slice(i+1)};});
+  for(const t of targets){
+    const list=t.type==='ap'?APS():t.type==='dz'?DZS():t.type==='sw'?SWS():t.type==='cam'?CAMS():t.type==='wall'?WALLS():null;
+    if(!list)continue;
+    const idx=list.findIndex(x=>x.id===t.id);
+    if(idx>=0)list.splice(idx,1);
+  }
+  clearSelection();
+  invalidateCoverageCache();
+  render();renderList();renderRP();calcCoverage();
+  toast(`Deleted ${targets.length} item${targets.length===1?'':'s'}`);
+}
+function updateWallVertex(cx,cy){
+  if(!wallVertDrag)return;
+  const w=WALLS().find(x=>x.id===wallVertDrag.wallId);
+  if(!w)return;
+  const imgW=mapImg.naturalWidth||1,imgH=mapImg.naturalHeight||1;
+  const p=vpToImg(cx,cy);
+  const fx=Math.max(0,Math.min(1,p.x/imgW));
+  const fy=Math.max(0,Math.min(1,p.y/imgH));
+  if(wallVertDrag.endpoint==='a'){w.fx1=fx;w.fy1=fy;}
+  else{w.fx2=fx;w.fy2=fy;}
+  invalidateCoverageCache();
+  render();
 }
 function renderWallPreview(){
   // Remove any existing preview line
@@ -922,7 +1430,33 @@ function commitWall(x2,y2){
 }
 
 // ═══ SELECTION ════════════════════════════════════
+// Multi-selection: `selection` is the full set of {type:id} pairs the user
+// has selected. `selId`/`selType` remain the "primary" / last-selected item
+// (drives which properties panel renders). Clicking without Shift replaces
+// the selection; Shift-clicking adds/removes.
+const selection=new Set();
+const _selKey=(id,type)=>type+':'+id;
+function isSelected(id,type){return selection.has(_selKey(id,type));}
+function clearSelection(){selection.clear();selId=null;selType=null;}
+function addToSelection(id,type){selection.add(_selKey(id,type));selId=id;selType=type;}
+function toggleSelection(id,type){
+  const k=_selKey(id,type);
+  if(selection.has(k)){
+    selection.delete(k);
+    if(selId===id&&selType===type){
+      // Primary went away — promote whichever pair is still in the set, if any.
+      const next=selection.values().next().value;
+      if(next){[selType,selId]=next.split(':');}else{selId=null;selType=null;}
+    }
+  }else{
+    addToSelection(id,type);
+  }
+  render();renderList();renderRP();
+}
+
 function sel(id,type,options){
+  selection.clear();
+  selection.add(_selKey(id,type));
   selId=id;selType=type;
   render();renderList();renderRP();
   // When selection came from a non-map source (list item, context menu from list),
@@ -973,6 +1507,7 @@ function toggleLock(){
   if(selType==='ap'){const ap=APS().find(a=>a.id===selId);if(ap){ap.locked=!ap.locked;render();renderList();renderRP();}}
   else if(selType==='dz'){const dz=DZS().find(a=>a.id===selId);if(dz){dz.locked=!dz.locked;render();renderList();renderRP();}}
   else if(selType==='sw'){const sw=SWS().find(a=>a.id===selId);if(sw){sw.locked=!sw.locked;render();renderList();renderRP();}}
+  else if(selType==='cam'){const c=CAMS().find(a=>a.id===selId);if(c){c.locked=!c.locked;render();renderList();renderRP();}}
 }
 
 // ═══ RENDER ═══════════════════════════════════════
@@ -990,7 +1525,7 @@ function renderAPs(){
       console.warn('Skipping AP with invalid coords:',ap);
       return;
     }
-    const cx=ap.fx*w,cy=ap.fy*h,r=ap.r,isSel=ap.id===selId;
+    const cx=ap.fx*w,cy=ap.fy*h,r=ap.r,isSel=isSelected(ap.id,'ap');
     const ls=Math.max(8,Math.min(14,r*.17));
     const g=mk('g');g.setAttribute('class','ap-grp');g.dataset.id=ap.id;g.style.pointerEvents='all';
     if(ap.locked)g.style.opacity='.7';
@@ -1069,7 +1604,7 @@ function renderAPs(){
     g.addEventListener('pointerdown',e=>{
       if(e.target.dataset.resize)return;
       e.stopPropagation();
-      if(e.shiftKey&&mode==='sel'){duplicateSelected();return;}
+      if(e.shiftKey&&mode==='sel'){toggleSelection(ap.id,'ap');return;}
       sel(ap.id,'ap');
       if(!ap.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=ap.fx*w-img.x;dragOffY=ap.fy*h-img.y;dragId=ap.id;dragType='ap';_dragInitialFx=ap.fx;_dragInitialFy=ap.fy;}
     });
@@ -1083,7 +1618,7 @@ function renderDZs(){
   if(!w||!h)return;
   DZS().forEach(dz=>{
     if(!Number.isFinite(dz.fx)||!Number.isFinite(dz.fy)||!Number.isFinite(dz.r)||dz.r<=0)return;
-    const cx=dz.fx*w,cy=dz.fy*h,isSel=dz.id===selId;
+    const cx=dz.fx*w,cy=dz.fy*h,isSel=isSelected(dz.id,'dz');
     const g=mk('g');g.setAttribute('class','dz-grp');g.dataset.id=dz.id;g.style.pointerEvents='all';
     const pulse=mk('circle');pulse.setAttribute('cx',cx);pulse.setAttribute('cy',cy);pulse.setAttribute('r',dz.r);
     pulse.setAttribute('class','dz-pulse');pulse.style.transformOrigin=`${cx}px ${cy}px`;pulse.style.animation='dzs 8s linear infinite';
@@ -1092,8 +1627,142 @@ function renderDZs(){
     const lbl=mk('text');lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+dz.r+11);lbl.setAttribute('text-anchor','middle');lbl.setAttribute('font-size','10');lbl.setAttribute('font-family','Rajdhani,sans-serif');lbl.setAttribute('font-weight','700');lbl.setAttribute('letter-spacing','.1em');lbl.setAttribute('fill',tInk());lbl.setAttribute('paint-order','stroke');lbl.setAttribute('stroke',tBg());lbl.setAttribute('stroke-width','3');lbl.textContent=(dz.label||'').toUpperCase();
     if(isSel&&!dz.locked){const rh=mk('circle');rh.setAttribute('cx',cx+dz.r);rh.setAttribute('cy',cy);rh.setAttribute('r',8);rh.setAttribute('class','rh-sel');rh.dataset.resizeDz=dz.id;rh.style.pointerEvents='all';rh.addEventListener('pointerdown',e=>{e.stopPropagation();resId=dz.id;resizeStartX=e.clientX;resizeStartR=dz.r;});g.appendChild(rh);}
     [pulse,icon,lbl].forEach(el=>g.appendChild(el));
-    g.addEventListener('pointerdown',e=>{e.stopPropagation();sel(dz.id,'dz');if(!dz.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=dz.fx*w-img.x;dragOffY=dz.fy*h-img.y;dragId=dz.id;dragType='dz';_dragInitialFx=dz.fx;_dragInitialFy=dz.fy;}});
+    g.addEventListener('pointerdown',e=>{e.stopPropagation();if(e.shiftKey&&mode==='sel'){toggleSelection(dz.id,'dz');return;}sel(dz.id,'dz');if(!dz.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=dz.fx*w-img.x;dragOffY=dz.fy*h-img.y;dragId=dz.id;dragType='dz';_dragInitialFx=dz.fx;_dragInitialFy=dz.fy;}});
     dzLayer.appendChild(g);
+  });
+}
+
+// Cable runs: a thin line from each AP/camera to its assigned switch.
+// Visualizes PoE wiring and helps spot long runs at a glance. See the PoE
+// panel (Show PoE button) for budget summaries per switch.
+let showCables=false;
+function renderCables(){
+  cableLayer.innerHTML='';
+  if(!showCables)return;
+  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
+  if(!w||!h)return;
+  const drawCable=(dev,sw)=>{
+    const dx=dev.fx*w,dy=dev.fy*h,sx=sw.fx*w,sy=sw.fy*h;
+    const ln=mk('line');
+    ln.setAttribute('x1',dx);ln.setAttribute('y1',dy);
+    ln.setAttribute('x2',sx);ln.setAttribute('y2',sy);
+    ln.setAttribute('class','cable-line');
+    cableLayer.appendChild(ln);
+    // Length label at midpoint
+    const lenPx=Math.hypot(sx-dx,sy-dy);
+    const lenM=(lenPx*(scaleM/100)).toFixed(1);
+    if(lenPx*scale>40){
+      const mx=(dx+sx)/2,my=(dy+sy)/2;
+      const txt=mk('text');
+      txt.setAttribute('x',mx);txt.setAttribute('y',my-3);
+      txt.setAttribute('class','cable-lbl');
+      txt.textContent=lenM+' m';
+      if(parseFloat(lenM)>100)txt.classList.add('cable-lbl-warn');
+      cableLayer.appendChild(txt);
+    }
+  };
+  APS().forEach(ap=>{
+    if(!ap.swId)return;
+    const sw=SWS().find(s=>s.id===ap.swId);
+    if(sw)drawCable(ap,sw);
+  });
+  CAMS().forEach(c=>{
+    if(!c.swId)return;
+    const sw=SWS().find(s=>s.id===c.swId);
+    if(sw)drawCable(c,sw);
+  });
+}
+
+// Cameras render as a triangular "field-of-view" cone (the visible area the
+// camera can see) plus a small lens marker at the position. Heading rotates
+// the cone around the position. 360° fisheye cameras get a ring instead.
+function renderCAMs(){
+  camLayer.innerHTML='';
+  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
+  if(!w||!h)return;
+  CAMS().forEach(c=>{
+    if(!Number.isFinite(c.fx)||!Number.isFinite(c.fy))return;
+    const cx=c.fx*w,cy=c.fy*h;
+    const isSel=isSelected(c.id,'cam');
+    const range=c.range||80;
+    const fov=Math.max(10,Math.min(360,c.fov||80));
+    const heading=c.heading||0;
+    const color=c.color||tInk();
+    const fillRgba=c.color?hexToRgba(c.color,.12):tInk(.08);
+    const g=mk('g');g.setAttribute('class','cam-grp');g.dataset.id=c.id;g.style.pointerEvents='all';
+    if(c.locked)g.style.opacity='.7';
+
+    // Cone path (or full circle for fisheye / 360°).
+    let cone;
+    if(fov>=350){
+      cone=mk('circle');
+      cone.setAttribute('cx',cx);cone.setAttribute('cy',cy);cone.setAttribute('r',range);
+    }else{
+      const half=fov/2;
+      const a1=(heading-half)*Math.PI/180;
+      const a2=(heading+half)*Math.PI/180;
+      const x1=cx+Math.cos(a1)*range, y1=cy+Math.sin(a1)*range;
+      const x2=cx+Math.cos(a2)*range, y2=cy+Math.sin(a2)*range;
+      const largeArc=fov>180?1:0;
+      cone=mk('path');
+      cone.setAttribute('d',`M${cx},${cy} L${x1.toFixed(1)},${y1.toFixed(1)} A${range},${range} 0 ${largeArc} 1 ${x2.toFixed(1)},${y2.toFixed(1)} Z`);
+    }
+    cone.setAttribute('class','cam-cone'+(isSel?' cam-cone-sel':''));
+    cone.style.fill=fillRgba;
+    cone.style.stroke=color;
+    camLayer.appendChild(cone);
+
+    // Lens marker at position.
+    const lens=mk('circle');
+    lens.setAttribute('cx',cx);lens.setAttribute('cy',cy);lens.setAttribute('r',6);
+    lens.setAttribute('class','cam-lens'+(isSel?' cam-lens-sel':''));
+    lens.style.fill=color;
+    camLayer.appendChild(lens);
+    const inner=mk('circle');
+    inner.setAttribute('cx',cx);inner.setAttribute('cy',cy);inner.setAttribute('r',2.5);
+    inner.style.fill=tBg();
+    inner.style.pointerEvents='none';
+    camLayer.appendChild(inner);
+
+    // Heading nub — small marker on the cone's centre line so the camera's
+    // forward direction is unambiguous even when the FoV is wide.
+    if(fov<350){
+      const a=heading*Math.PI/180;
+      const tipX=cx+Math.cos(a)*Math.min(range,18);
+      const tipY=cy+Math.sin(a)*Math.min(range,18);
+      const tip=mk('line');
+      tip.setAttribute('x1',cx);tip.setAttribute('y1',cy);
+      tip.setAttribute('x2',tipX);tip.setAttribute('y2',tipY);
+      tip.setAttribute('class','cam-heading');
+      tip.style.stroke=color;
+      camLayer.appendChild(tip);
+    }
+
+    // Label below the lens.
+    const lbl=mk('text');
+    lbl.setAttribute('x',cx);lbl.setAttribute('y',cy+14);
+    lbl.setAttribute('class','cam-lbl');
+    lbl.style.fill=color;
+    lbl.textContent=(c.name||'').toUpperCase();
+    camLayer.appendChild(lbl);
+
+    g.appendChild(cone);g.appendChild(lens);g.appendChild(inner);g.appendChild(lbl);
+
+    // The group itself isn't appended (we already appended children directly
+    // into camLayer). Attach pointer handlers to the lens — it's the obvious
+    // hit target. Cone is non-interactive on its own.
+    lens.style.cursor='pointer';
+    lens.addEventListener('pointerdown',e=>{
+      e.stopPropagation();
+      if(e.shiftKey&&mode==='sel'){toggleSelection(c.id,'cam');return;}
+      sel(c.id,'cam');
+      if(!c.locked){
+        const img=vpToImg(e.clientX,e.clientY);
+        dragOffX=c.fx*w-img.x;dragOffY=c.fy*h-img.y;
+        dragId=c.id;dragType='cam';
+        _dragInitialFx=c.fx;_dragInitialFy=c.fy;
+      }
+    });
   });
 }
 
@@ -1103,7 +1772,7 @@ function renderSWs(){
   if(!w||!h)return;
   SWS().forEach(sw=>{
     if(!Number.isFinite(sw.fx)||!Number.isFinite(sw.fy))return;
-    const cx=sw.fx*w,cy=sw.fy*h,isSel=sw.id===selId;
+    const cx=sw.fx*w,cy=sw.fy*h,isSel=isSelected(sw.id,'sw');
     const g=mk('g');g.setAttribute('class','sw-grp');g.dataset.id=sw.id;g.style.pointerEvents='all';
     const sz=sw.size||22;
     // Box and icon sizes scale with sz so a bigger switch reads as a bigger icon, not just a bigger empty box.
@@ -1118,6 +1787,7 @@ function renderSWs(){
     [box,icon,lbl].forEach(el=>g.appendChild(el));
     g.addEventListener('pointerdown',e=>{
       e.stopPropagation();
+      if(e.shiftKey&&mode==='sel'){toggleSelection(sw.id,'sw');return;}
       sel(sw.id,'sw');
       if(!sw.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=sw.fx*w-img.x;dragOffY=sw.fy*h-img.y;dragId=sw.id;dragType='sw';_dragInitialFx=sw.fx;_dragInitialFy=sw.fy;}
     });
@@ -1190,16 +1860,53 @@ function renderOL(){
   }
 }
 
+// Per-pixel signal-strength heatmap. We paint to an offscreen canvas at a
+// coarse grid resolution (one cell per ~6 px of image space), shading each
+// cell by the dBm of the strongest AP that can reach it through the walls.
+// Cells are quantized to the HEATMAP_STOPS palette so the rendering reads as
+// distinct bands rather than a continuous gradient.
+function _heatColor(dbm){
+  if(dbm===null||dbm===undefined||!Number.isFinite(dbm))return null;
+  // HEATMAP_STOPS is ordered strongest→weakest; pick the first whose
+  // threshold the sample meets.
+  for(const s of HEATMAP_STOPS){
+    if(dbm>=s.dbm)return s.color;
+  }
+  return null;
+}
 function renderHeat(){
-  heatLayer.innerHTML='';if(!showHeat)return;
-  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  APS().forEach(ap=>{
-    const cx=ap.fx*w,cy=ap.fy*h;
-    [{r:ap.r*.55,cls:'heatmap-strong'},{r:ap.r*.78,cls:'heatmap-medium'},{r:ap.r,cls:'heatmap-weak'}].forEach(({r,cls})=>{
-      const c=mk('circle');c.setAttribute('cx',cx);c.setAttribute('cy',cy);c.setAttribute('r',r);c.setAttribute('class',cls);
-      heatLayer.appendChild(c);
-    });
-  });
+  // We use a canvas overlay, but keep the old SVG layer reachable in case
+  // anything else clears it; just always clear it on render.
+  heatLayer.innerHTML='';
+  if(!showHeat||!heatCanvas){heatCanvas.style.display='none';return;}
+  const w=mapImg.naturalWidth||0,h=mapImg.naturalHeight||0;
+  if(!w||!h){heatCanvas.style.display='none';return;}
+  heatCanvas.width=w;heatCanvas.height=h;
+  heatCanvas.style.width=w+'px';heatCanvas.style.height=h+'px';
+  heatCanvas.style.display='block';
+  const ctx=heatCanvas.getContext('2d');
+  ctx.clearRect(0,0,w,h);
+  const aps=APS();
+  if(!aps.length)return;
+  const walls=WALLS();
+  // Sample step in image pixels — 5 px gives crisp bands without making the
+  // sampler O(walls * 40 000) per render.
+  const step=Math.max(4,Math.round(Math.min(w,h)/120));
+  for(let y=0;y<h;y+=step){
+    for(let x=0;x<w;x+=step){
+      // Strongest dBm across all APs at this point (we want best-AP coverage).
+      let best=-Infinity;
+      for(const ap of aps){
+        const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
+        const d=dbmAt(ap,x,y,w,h,walls,{bandFactor:bandLossMultiplier(ap.freq),arcDeg:pat.arc,headingDeg:ap.heading||0});
+        if(d!==null&&d>best)best=d;
+      }
+      const color=_heatColor(best===-Infinity?null:best);
+      if(!color)continue;
+      ctx.fillStyle=color;
+      ctx.fillRect(x,y,step,step);
+    }
+  }
 }
 
 function renderGrid(){
@@ -1211,7 +1918,7 @@ function renderGrid(){
   gridLayer.appendChild(g);
 }
 
-function render(){_resetThemeCache();renderGrid();renderHeat();renderOL();renderWalls();renderSWs();renderAPs();renderDZs();renderChannelOverlap();renderRuler();updateCnt();}
+function render(){_resetThemeCache();renderGrid();renderHeat();renderOL();renderWalls();renderCables();renderSWs();renderAPs();renderCAMs();renderDZs();renderChannelOverlap();renderRuler();updateCnt();}
 
 // ═══ DRAG ═════════════════════════════════════════
 // During an active drag we update the moved item's geometry directly via a
@@ -1229,6 +1936,7 @@ function doDrag(cx,cy){
   if(dragType==='ap')item=APS().find(a=>a.id===dragId);
   else if(dragType==='dz')item=DZS().find(a=>a.id===dragId);
   else if(dragType==='sw')item=SWS().find(a=>a.id===dragId);
+  else if(dragType==='cam')item=CAMS().find(a=>a.id===dragId);
   if(!item)return;
   item.fx=fx;item.fy=fy;
   // For APs with walls the coverage *shape* depends on position, so we still
@@ -1240,6 +1948,9 @@ function doDrag(cx,cy){
     render();
     return;
   }
+  // Camera drags always do a full re-render so the cone updates with the
+  // new position. Other types use a cheap transform on the existing group.
+  if(dragType==='cam'){render();return;}
   const layer=dragType==='ap'?apLayer:dragType==='dz'?dzLayer:swLayer;
   const grp=layer.querySelector(`[data-id="${dragId}"]`);
   if(grp){
@@ -1254,7 +1965,7 @@ function endDrag(){
   if(!dragId)return;
   // Clear the per-element transform and do one full render so the item's real
   // coords (now updated on the data) are reflected everywhere.
-  const layer=dragType==='ap'?apLayer:dragType==='dz'?dzLayer:dragType==='sw'?swLayer:null;
+  const layer=dragType==='ap'?apLayer:dragType==='dz'?dzLayer:dragType==='sw'?swLayer:dragType==='cam'?camLayer:null;
   if(layer){const grp=layer.querySelector(`[data-id="${dragId}"]`);if(grp)grp.removeAttribute('transform');}
   if(dragType==='ap')invalidateCoverageCache();
   dragId=null;dragType=null;
@@ -1321,6 +2032,7 @@ function updateScaleBar(){
 function toggleOL(){showOL=!showOL;document.getElementById('btn-ol').classList.toggle('active',showOL);document.getElementById('leg-ol').style.display=showOL?'flex':'none';render();}
 function toggleHeat(){showHeat=!showHeat;document.getElementById('btn-heat').classList.toggle('active',showHeat);render();}
 function toggleGrid(){showGrid=!showGrid;document.getElementById('btn-grid').classList.toggle('active',showGrid);render();}
+function toggleCables(){showCables=!showCables;document.getElementById('btn-cables').classList.toggle('active',showCables);render();}
 function toggleCoverage(){
   showCoverage=!showCoverage;
   document.getElementById('btn-cov').classList.toggle('active',showCoverage);
@@ -1339,8 +2051,90 @@ function renderRP(){
   if(selType==='ap')renderAPPanel();
   else if(selType==='dz')renderDZPanel();
   else if(selType==='sw')renderSWPanel();
+  else if(selType==='cam')renderCAMPanel();
   else if(selType==='wall')renderWallPanel();
 }
+
+function renderCAMPanel(){
+  const c=CAMS().find(x=>x.id===selId);if(!c)return;
+  document.getElementById('rp-head').textContent='Edit Camera';
+  const mOpts=buildGroupedOptions(CAM_MODEL_GROUPS,c.model||'G4 Pro');
+  const realR=Math.round((c.range||80)*(scaleM/100));
+  const swOptions=SWS().map(sw=>`<option value="${esc(sw.id)}"${sw.id===c.swId?' selected':''}>${esc(sw.name)} · ${esc(sw.model||'')}</option>`).join('');
+  rpBody.innerHTML=`
+    <div class="ep-section">Identity</div>
+    <div class="ep-row"><label class="ep-lbl">Name</label><input class="ep-in" id="cam-name" value="${esc(c.name)}" data-input-action="upd-cam"/></div>
+    <div class="ep-row"><label class="ep-lbl">Model</label><select class="ep-sel" id="cam-model" data-input-action="upd-cam">${mOpts}</select></div>
+    <div class="ep-row"><label class="ep-lbl">Resolution</label>
+      <select class="ep-sel" id="cam-res" data-input-action="upd-cam">
+        ${['8MP','4K','5MP','4MP','2MP','12MP','1080p','720p'].map(r=>`<option${c.resolution===r?' selected':''}>${r}</option>`).join('')}
+      </select>
+    </div>
+    <div class="ep-section">Lens</div>
+    <div class="ep-row ep-slider-row">
+      <label class="ep-lbl">Field of View</label>
+      <input class="ep-rng" id="cam-fov" type="range" min="10" max="360" value="${Math.round(c.fov||80)}" data-input-action="upd-cam-fov"/>
+      <span class="ep-rng-val" id="cam-fov-v">${Math.round(c.fov||80)}°</span>
+    </div>
+    <div class="ep-row ep-slider-row">
+      <label class="ep-lbl">View Range</label>
+      <input class="ep-rng" id="cam-range" type="range" min="20" max="400" value="${Math.round(c.range||80)}" data-input-action="upd-cam-range"/>
+      <span class="ep-rng-val" id="cam-range-v">${realR}m</span>
+    </div>
+    <div class="ep-row ep-slider-row">
+      <label class="ep-lbl">Heading</label>
+      <input class="ep-rng" id="cam-heading" type="range" min="0" max="359" value="${Math.round(c.heading||0)}" data-input-action="upd-cam-heading"/>
+      <span class="ep-rng-val" id="cam-heading-v">${Math.round(c.heading||0)}°</span>
+    </div>
+    <div class="ep-section">Color</div>
+    <div class="color-swatches">
+      ${AP_COLORS.map(col=>{
+        const isSel=(c.color||'')===col.value;
+        return `<button class="color-swatch${col.value?'':' color-default'}${isSel?' on':''}" ${col.value?`style="background:${col.value}"`:''} data-action="set-cam-color" data-arg="${esc(col.value)}" title="${esc(col.label)}" aria-label="${esc(col.label)}"></button>`;
+      }).join('')}
+    </div>
+    <div class="ep-section">Network / PoE</div>
+    <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in ep-mono" id="cam-ip" value="${esc(c.ip||'')}" data-input-action="upd-cam" placeholder="192.168.1.x"/></div>
+    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="cam-mac" value="${esc(c.mac||'')}" data-input-action="upd-cam" placeholder="aa:bb:cc:dd:ee:ff"/></div>
+    <div class="ep-row"><label class="ep-lbl">Switch</label>
+      <select class="ep-sel" id="cam-sw" data-input-action="upd-cam">
+        <option value=""${!c.swId?' selected':''}>— None —</option>${swOptions}
+      </select>
+    </div>
+    <div class="ep-row"><label class="ep-lbl">Port</label><input class="ep-in" id="cam-port" value="${esc(c.port||'')}" data-input-action="upd-cam" placeholder="Port 12"/></div>
+    <div class="ep-row"><label class="ep-lbl">VLAN</label><input class="ep-in" id="cam-vlan" value="${esc(c.vlan||'')}" data-input-action="upd-cam" placeholder="20"/></div>
+    <div class="ep-section">Options</div>
+    <label class="ep-check"><input type="checkbox" ${c.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
+    <div class="ep-section">Notes</div>
+    <div class="ep-row"><textarea class="ep-txt" id="cam-notes" rows="3" data-input-action="upd-cam" placeholder="Mount type, lens info, install notes…">${esc(c.notes||'')}</textarea></div>
+    <button class="btn ep-del" data-action="ask-del">✕ Delete Camera</button>`;
+}
+function updCam(){
+  const c=CAMS().find(x=>x.id===selId);if(!c)return;
+  snapshotSoon();
+  const prevModel=c.model;
+  c.name=document.getElementById('cam-name').value||c.name;
+  c.model=document.getElementById('cam-model').value;
+  c.resolution=document.getElementById('cam-res').value;
+  c.ip=document.getElementById('cam-ip').value;
+  c.mac=document.getElementById('cam-mac').value;
+  c.swId=document.getElementById('cam-sw').value;
+  c.port=document.getElementById('cam-port').value;
+  c.vlan=document.getElementById('cam-vlan').value;
+  c.notes=document.getElementById('cam-notes').value;
+  if(c.model!==prevModel && CAM_SPECS[c.model]){
+    const s=CAM_SPECS[c.model];
+    c.fov=s.fov;c.range=Math.round(s.range*100/(scaleM||100));c.resolution=s.res;
+    const fovEl=document.getElementById('cam-fov');if(fovEl){fovEl.value=c.fov;document.getElementById('cam-fov-v').textContent=c.fov+'°';}
+    const rEl=document.getElementById('cam-range');if(rEl){rEl.value=c.range;document.getElementById('cam-range-v').textContent=Math.round(c.range*(scaleM/100))+'m';}
+  }
+  if(c.model)SETTINGS.lastCamModel=c.model;
+  render();renderList();
+}
+function updCamFov(v){const c=CAMS().find(x=>x.id===selId);if(!c)return;snapshotSoon();c.fov=parseInt(v,10);document.getElementById('cam-fov-v').textContent=c.fov+'°';render();}
+function updCamRange(v){const c=CAMS().find(x=>x.id===selId);if(!c)return;snapshotSoon();c.range=parseInt(v,10);document.getElementById('cam-range-v').textContent=Math.round(c.range*(scaleM/100))+'m';render();}
+function updCamHeading(v){const c=CAMS().find(x=>x.id===selId);if(!c)return;snapshotSoon();c.heading=parseInt(v,10);document.getElementById('cam-heading-v').textContent=c.heading+'°';render();}
+function setCamColor(col){const c=CAMS().find(x=>x.id===selId);if(!c)return;snapshot();c.color=col||'';render();renderList();renderCAMPanel();}
 
 function renderWallPanel(){
   const w=WALLS().find(x=>x.id===selId);if(!w)return;
@@ -1414,12 +2208,29 @@ function renderAPPanel(){
       <input class="ep-rng" id="ep-r" type="range" min="15" max="500" value="${Math.round(ap.r)}" data-input-action="upd-ap-r"/>
       <span class="ep-rng-val" id="ep-rv">${realR}m</span>
     </div>
+    <div class="ep-section">Antenna Pattern</div>
+    <div class="ep-row"><label class="ep-lbl">Pattern</label>
+      <select class="ep-sel" id="ep-pattern" data-input-action="upd-ap">
+        ${AP_PATTERN_KEYS.map(k=>`<option value="${k}"${(ap.pattern||'omni')===k?' selected':''}>${esc(AP_PATTERNS[k].label)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="ep-row ep-slider-row" id="ep-heading-row" style="${(ap.pattern&&ap.pattern!=='omni'&&ap.pattern!=='ceiling')?'':'display:none'}">
+      <label class="ep-lbl">Heading</label>
+      <input class="ep-rng" id="ep-heading" type="range" min="0" max="359" value="${Math.round(ap.heading||0)}" data-input-action="upd-ap-heading"/>
+      <span class="ep-rng-val" id="ep-heading-v">${Math.round(ap.heading||0)}°</span>
+    </div>
     <div class="ep-section">Radio</div>
     <div class="ep-row"><label class="ep-lbl">Channel</label><input class="ep-in ep-mono" id="ep-channel" value="${esc(ap.channel||'auto')}" data-input-action="upd-ap" placeholder="auto · 6 · 36 · 149 …"/></div>
     <div class="ep-row"><label class="ep-lbl">TX Power</label><input class="ep-in ep-mono" id="ep-txpower" value="${esc(ap.txPower||'auto')}" data-input-action="upd-ap" placeholder="auto · low · medium · high · 20 dBm"/></div>
     <div class="ep-section">Network Info</div>
     <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in" id="ep-ip" value="${ap.ip||''}" data-input-action="upd-ap" placeholder="192.168.1.x"/></div>
     <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="ep-mac" value="${ap.mac||''}" data-input-action="upd-ap" placeholder="aa:bb:cc:dd:ee:ff"/></div>
+    <div class="ep-row"><label class="ep-lbl">Switch</label>
+      <select class="ep-sel" id="ep-sw" data-input-action="upd-ap">
+        <option value=""${!ap.swId?' selected':''}>— None —</option>
+        ${SWS().map(sw=>`<option value="${esc(sw.id)}"${sw.id===ap.swId?' selected':''}>${esc(sw.name)} · ${esc(sw.model||'')}</option>`).join('')}
+      </select>
+    </div>
     <div class="ep-row"><label class="ep-lbl">Switch Port</label><input class="ep-in" id="ep-port" value="${ap.port||''}" data-input-action="upd-ap" placeholder="SW1 Port 4"/></div>
     <div class="ep-row"><label class="ep-lbl">VLAN</label><input class="ep-in" id="ep-vlan" value="${ap.vlan||''}" data-input-action="upd-ap" placeholder="10"/></div>
     <div class="ep-section">Options</div>
@@ -1463,6 +2274,7 @@ function renderSWPanel(){
       <input class="ep-in" id="sw-model-custom" value="${isCustom?esc(sw.model||''):''}" data-input-action="upd-sw" placeholder="Enter model name"/>
     </div>
     <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in ep-mono" id="sw-ip" value="${esc(sw.ip||'')}" data-input-action="upd-sw" placeholder="192.168.1.1"/></div>
+    <div class="ep-row"><label class="ep-lbl">PoE Budget (W)</label><input class="ep-in ep-mono" id="sw-poe" type="number" min="0" value="${sw.poeBudget||0}" data-input-action="upd-sw" placeholder="0 for non-PoE"/></div>
     <div class="ep-section">Icon Size</div>
     <div class="ep-row ep-slider-row">
       <input class="ep-rng" id="sw-size" type="range" min="10" max="80" value="${sw.size||22}" data-input-action="upd-sw-size"/>
@@ -1481,10 +2293,19 @@ function updAP(){
   ap.name=document.getElementById('ep-name').value||ap.name;
   ap.model=document.getElementById('ep-model').value;
   ap.freq=document.getElementById('ep-freq').value;
+  const patEl=document.getElementById('ep-pattern');
+  if(patEl){
+    ap.pattern=patEl.value;
+    // Show/hide heading slider for directional patterns
+    const row=document.getElementById('ep-heading-row');
+    if(row)row.style.display=(ap.pattern==='omni'||ap.pattern==='ceiling')?'none':'';
+    invalidateCoverageCache();
+  }
   const chEl=document.getElementById('ep-channel');if(chEl)ap.channel=chEl.value;
   const pwEl=document.getElementById('ep-txpower');if(pwEl)ap.txPower=pwEl.value;
   ap.ip=document.getElementById('ep-ip').value;
   ap.mac=document.getElementById('ep-mac').value;
+  const swEl=document.getElementById('ep-sw');if(swEl)ap.swId=swEl.value;
   ap.port=document.getElementById('ep-port').value;
   ap.vlan=document.getElementById('ep-vlan').value;
   ap.notes=document.getElementById('ep-notes').value;
@@ -1502,6 +2323,7 @@ function updAP(){
   render();renderList();
 }
 function updR(v){const ap=APS().find(a=>a.id===selId);if(!ap)return;snapshotSoon();ap.r=parseInt(v);if(WALLS().length)invalidateCoverageCache();document.getElementById('ep-rv').textContent=Math.round(v*(scaleM/100))+'m';render();calcCoverage();}
+function updAPHeading(v){const ap=APS().find(a=>a.id===selId);if(!ap)return;snapshotSoon();ap.heading=parseInt(v,10);invalidateCoverageCache();document.getElementById('ep-heading-v').textContent=ap.heading+'°';render();calcCoverage();}
 function setSig(s){const ap=APS().find(a=>a.id===selId);if(!ap)return;snapshot();ap.sig=s;render();renderList();renderAPPanel();}
 function setApColor(c){
   const ap=APS().find(a=>a.id===selId);
@@ -1527,6 +2349,8 @@ function updSW(){
     sw.model=dropdown;
   }
   sw.ip=document.getElementById('sw-ip').value;
+  const poeEl=document.getElementById('sw-poe');
+  if(poeEl)sw.poeBudget=parseInt(poeEl.value,10)||0;
   sw.notes=document.getElementById('sw-notes').value;
   render();renderList();
 }
@@ -1541,8 +2365,8 @@ function updSWSize(v){
 // ═══ LEFT LIST ════════════════════════════════════
 function renderList(){
   leftList.innerHTML='';
-  const apN=APS().length,swN=SWS().length,dzN=DZS().length,wN=WALLS().length;
-  const total=apN+swN+dzN+wN;
+  const apN=APS().length,swN=SWS().length,dzN=DZS().length,wN=WALLS().length,cmN=CAMS().length;
+  const total=apN+swN+dzN+wN+cmN;
   // Per-category counters in the header. Each one styled subtly so the eye lands
   // on the most populous one but they're all readable at a glance.
   const cnts=document.getElementById('sb-counters');
@@ -1550,6 +2374,7 @@ function renderList(){
     cnts.innerHTML=`
       <span class="cnt-pill" title="Access Points"><span class="cnt-icon">●</span><span class="cnt-num">${apN}</span><span class="cnt-lbl">APs</span></span>
       <span class="cnt-pill" title="Switches / Routers"><span class="cnt-icon">⊞</span><span class="cnt-num">${swN}</span><span class="cnt-lbl">SW</span></span>
+      <span class="cnt-pill" title="Cameras"><span class="cnt-icon">◉</span><span class="cnt-num">${cmN}</span><span class="cnt-lbl">CAM</span></span>
       <span class="cnt-pill" title="Dead Zones"><span class="cnt-icon">⚠</span><span class="cnt-num">${dzN}</span><span class="cnt-lbl">DZ</span></span>
       <span class="cnt-pill" title="Walls"><span class="cnt-icon">▌</span><span class="cnt-num">${wN}</span><span class="cnt-lbl">W</span></span>`;
   }
@@ -1565,9 +2390,10 @@ function renderList(){
 
   const filteredAPs=APS().filter(ap=>matches(ap.name,ap.model,ap.freq,ap.ip,ap.mac,ap.notes));
   const filteredSWs=SWS().filter(sw=>matches(sw.name,sw.model,sw.ip,sw.notes));
+  const filteredCAMs=CAMS().filter(c=>matches(c.name,c.model,c.ip,c.mac,c.notes));
   const filteredDZs=DZS().filter(dz=>matches(dz.label));
   const filteredWalls=WALLS().filter(w=>matches((WALL_MATERIALS[w.material]||{}).label));
-  const matchTotal=filteredAPs.length+filteredSWs.length+filteredDZs.length+filteredWalls.length;
+  const matchTotal=filteredAPs.length+filteredSWs.length+filteredCAMs.length+filteredDZs.length+filteredWalls.length;
 
   // No matches when there IS a query → friendly "no results" instead of empty space
   if(q&&matchTotal===0){
@@ -1592,6 +2418,15 @@ function renderList(){
       const d=document.createElement('div');d.className='list-item sw-item'+(sw.id===selId?' active':'');
       d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}</div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${sw.id}" data-type="sw">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(sw.id,'sw',{zoom:true});setMode('sel');});leftList.appendChild(d);
+    });
+  }
+  if(filteredCAMs.length){
+    const h=document.createElement('div');h.className='sec-lbl';h.textContent='Cameras';leftList.appendChild(h);
+    filteredCAMs.forEach(c=>{
+      const d=document.createElement('div');d.className='list-item cam-item'+(c.id===selId?' active':'')+(c.locked?' locked':'');
+      const dotStyle=c.color?` style="background:${esc(c.color)}"`:'';
+      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(c.name)}</div><div class="li-sub">${esc(c.model||'')} · ${esc(c.resolution||'')}</div></div>${c.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${c.id}" data-type="cam">✕</button>`;
+      d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(c.id,'cam',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
   if(filteredDZs.length){
@@ -1633,7 +2468,7 @@ function doDelete(target){
   if(!target)return;
   const {id,type}=target;
   snapshot();
-  const list=type==='ap'?APS():type==='dz'?DZS():type==='sw'?SWS():type==='wall'?WALLS():null;
+  const list=type==='ap'?APS():type==='dz'?DZS():type==='sw'?SWS():type==='cam'?CAMS():type==='wall'?WALLS():null;
   if(!list)return;
   const idx=list.findIndex(a=>a.id===id);
   if(idx<0)return;  // already deleted; bail silently
@@ -1739,7 +2574,8 @@ window.addEventListener('blur',closeContextMenu);
 function openItemContextMenu(type,id,clientX,clientY){
   const item=type==='ap'?APS().find(a=>a.id===id)
           :type==='dz'?DZS().find(a=>a.id===id)
-          :type==='sw'?SWS().find(a=>a.id===id):null;
+          :type==='sw'?SWS().find(a=>a.id===id)
+          :type==='cam'?CAMS().find(a=>a.id===id):null;
   if(!item)return;
   // Select the item so Edit + Delete use the right target
   sel(id,type);
@@ -1776,17 +2612,21 @@ function togglePresent(){
 let tT;function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');clearTimeout(tT);tT=setTimeout(()=>el.classList.remove('show'),2400);}
 
 // ═══ EXPORT HTML ══════════════════════════════════
-// Build the SVG overlay content (walls, switches, APs, dead zones)
-// shared by HTML export and PDF export. Returns {cw, ch, innerSVG} where
-// innerSVG is a string of <g> blocks ready to drop inside an <svg>.
-function buildMapOverlaySVG(){
-  const cw=mapImg.naturalWidth||1000,ch=mapImg.naturalHeight||700;
-  const hasWalls=WALLS().length>0;
-  const apSVG=APS().map(ap=>{
-    if(!Number.isFinite(ap.fx)||!Number.isFinite(ap.fy)||!Number.isFinite(ap.r)||ap.r<=0){
-      console.warn('Skipping AP with invalid coords:',ap);
-      return '';
-    }
+// Build the SVG overlay content for a specific floor (walls, switches, APs,
+// cameras, dead zones). For the current floor we can use the live coverage
+// path cache; for other floors we recompute against their stored width/
+// height. Returns {cw, ch, innerSVG} where innerSVG is a string of <g>
+// blocks ready to drop inside an <svg>.
+function buildFloorOverlaySVG(floor,imgEl){
+  const cw=(imgEl&&imgEl.naturalWidth)||1000,ch=(imgEl&&imgEl.naturalHeight)||700;
+  const walls=floor.WALLS||[];
+  const hasWalls=walls.length>0;
+  const aps=floor.APS||[];
+  const dzs=floor.DZS||[];
+  const sws=floor.SWS||[];
+  const cams=floor.CAMS||[];
+  const apSVG=aps.map(ap=>{
+    if(!Number.isFinite(ap.fx)||!Number.isFinite(ap.fy)||!Number.isFinite(ap.r)||ap.r<=0)return '';
     const cx=(ap.fx*cw).toFixed(1),cy=(ap.fy*ch).toFixed(1),r=ap.r,ri=(r*.54).toFixed(1);
     const ls=Math.max(8,Math.min(14,r*.17)).toFixed(1);
     const col=ap.color||'';
@@ -1797,12 +2637,15 @@ function buildMapOverlaySVG(){
     const lblFill=col||'#000';
     const sw={strong:'1.5',medium:'1.2',weak:'1'}[ap.sig];
     const da=ap.sig==='strong'?'':`stroke-dasharray="${ap.sig==='medium'?'6 3':'3 3'}"`;
-    const realM=Math.round(r*(scaleM/100));
-    const outerShape=hasWalls
-      ? `<path d="${computeCoveragePath(ap)}" fill="${of}" stroke="${oc}" stroke-width="${sw}" ${da}/>`
+    const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
+    const opts={rays:COVERAGE_RAYS,bandFactor:bandLossMultiplier(ap.freq),arcDeg:pat.arc,headingDeg:ap.heading||0};
+    const outerD=_computeCoveragePath(ap,cw,ch,walls,opts);
+    const innerD=_computeCoveragePath({...ap,r:ap.r*.54},cw,ch,walls,opts);
+    const outerShape=hasWalls||pat.arc<180
+      ? `<path d="${outerD}" fill="${of}" stroke="${oc}" stroke-width="${sw}" ${da}/>`
       : `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${of}" stroke="${oc}" stroke-width="${sw}" ${da}/>`;
-    const innerShape=hasWalls
-      ? `<path d="${getInnerCoveragePath(ap)}" fill="${innerFill}" stroke="${oc}" stroke-width=".8" opacity=".6"/>`
+    const innerShape=hasWalls||pat.arc<180
+      ? `<path d="${innerD}" fill="${innerFill}" stroke="${oc}" stroke-width=".8" opacity=".6"/>`
       : `<circle cx="${cx}" cy="${cy}" r="${ri}" fill="${innerFill}" stroke="${oc}" stroke-width=".8" opacity=".6"/>`;
     return `<g>${outerShape}
 ${innerShape}
@@ -1810,27 +2653,50 @@ ${innerShape}
 <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Rajdhani,sans-serif" font-size="${ls}" font-weight="700" letter-spacing=".04em" fill="${lblFill}" paint-order="stroke" stroke="#efece5" stroke-width="3">${esc(ap.name)}</text>
 </g>`;
   }).join('\n');
-  const wallSVG=WALLS().map(w=>{
+  const wallSVG=walls.map(w=>{
     const mat=WALL_MATERIALS[w.material]||WALL_MATERIALS.drywall;
     const dash=mat.dash?` stroke-dasharray="${mat.dash}"`:'';
     const px=wallToPx(w,cw,ch);
     return `<line x1="${px.x1.toFixed(1)}" y1="${px.y1.toFixed(1)}" x2="${px.x2.toFixed(1)}" y2="${px.y2.toFixed(1)}" stroke="#000" stroke-width="${mat.strokeWidth}" stroke-linecap="round"${dash}/>`;
   }).join('\n');
-  const dzSVG=DZS().map(dz=>{
+  const dzSVG=dzs.map(dz=>{
     if(!Number.isFinite(dz.fx)||!Number.isFinite(dz.fy)||!Number.isFinite(dz.r)||dz.r<=0)return '';
     const cx=(dz.fx*cw).toFixed(1),cy=(dz.fy*ch).toFixed(1);
     return `<g><circle cx="${cx}" cy="${cy}" r="${dz.r}" fill="rgba(0,0,0,.06)" stroke="#000" stroke-width="1.5" stroke-dasharray="4 3"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="18" fill="#000">⚠</text><text x="${cx}" y="${(parseFloat(cy)+dz.r+11).toFixed(1)}" text-anchor="middle" font-family="Rajdhani,sans-serif" font-size="10" font-weight="700" letter-spacing=".1em" fill="#000" paint-order="stroke" stroke="#efece5" stroke-width="3">${esc((dz.label||'').toUpperCase())}</text></g>`;
   }).join('\n');
-  const swSVG=SWS().map(sw=>{
+  const swSVG=sws.map(sw=>{
     if(!Number.isFinite(sw.fx)||!Number.isFinite(sw.fy))return '';
     const cx=(sw.fx*cw).toFixed(1),cy=(sw.fy*ch).toFixed(1),sz=sw.size||22;
     const iconFs=Math.max(8,sz*.65).toFixed(1);
     const lblFs=Math.max(7,sz*.42).toFixed(1);
     return `<g><rect x="${parseFloat(cx)-sz}" y="${parseFloat(cy)-sz*.6}" width="${sz*2}" height="${sz*1.2}" rx="2" fill="rgba(0,0,0,.04)" stroke="#000" stroke-width="1.2"/><text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${iconFs}" fill="#000">⊞</text><text x="${cx}" y="${(parseFloat(cy)+sz*.9).toFixed(1)}" text-anchor="middle" font-family="Rajdhani,sans-serif" font-size="${lblFs}" font-weight="700" letter-spacing=".08em" fill="#000" paint-order="stroke" stroke="#efece5" stroke-width="2.5">${esc((sw.name||'').toUpperCase())}</text></g>`;
   }).join('\n');
-  return {cw,ch,innerSVG:`${wallSVG}${swSVG}${apSVG}${dzSVG}`};
+  const camSVG=cams.map(c=>{
+    if(!Number.isFinite(c.fx)||!Number.isFinite(c.fy))return '';
+    const cx=c.fx*cw, cy=c.fy*ch;
+    const fov=c.fov||80,heading=c.heading||0,range=c.range||80;
+    const col=c.color||'#000';
+    let cone;
+    if(fov>=350){
+      cone=`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${range}" fill="${hexToRgba(col,.12)}" stroke="${col}" stroke-width="1.2" opacity=".85"/>`;
+    }else{
+      const half=fov/2;
+      const a1=(heading-half)*Math.PI/180, a2=(heading+half)*Math.PI/180;
+      const x1=cx+Math.cos(a1)*range, y1=cy+Math.sin(a1)*range;
+      const x2=cx+Math.cos(a2)*range, y2=cy+Math.sin(a2)*range;
+      const largeArc=fov>180?1:0;
+      cone=`<path d="M${cx.toFixed(1)},${cy.toFixed(1)} L${x1.toFixed(1)},${y1.toFixed(1)} A${range},${range} 0 ${largeArc} 1 ${x2.toFixed(1)},${y2.toFixed(1)} Z" fill="${hexToRgba(col,.12)}" stroke="${col}" stroke-width="1.2" opacity=".85"/>`;
+    }
+    return `<g>${cone}<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="5" fill="${col}"/>
+<text x="${cx.toFixed(1)}" y="${(cy+14).toFixed(1)}" text-anchor="middle" font-family="Rajdhani,sans-serif" font-size="10" font-weight="700" letter-spacing=".08em" fill="${col}" paint-order="stroke" stroke="#efece5" stroke-width="3">${esc((c.name||'').toUpperCase())}</text></g>`;
+  }).join('\n');
+  return {cw,ch,innerSVG:`${wallSVG}${swSVG}${apSVG}${camSVG}${dzSVG}`};
 }
-
+// Legacy single-floor wrapper kept for the HTML export which uses the live
+// mapImg.naturalWidth/Height directly.
+function buildMapOverlaySVG(){
+  return buildFloorOverlaySVG(F(),mapImg);
+}
 function doExport(){
   const f=F();const imgSrc=mapImg.src;
   const {cw,ch,innerSVG}=buildMapOverlaySVG();
@@ -1899,13 +2765,74 @@ ${APS().length?`<table class="at"><thead><tr><th>#</th><th>Name</th><th>Model</t
 }
 
 // ═══ PDF ══════════════════════════════════════════
-function doPDF(){
+async function doPDF(){
+  // Resolve each floor's image (from IDB) and load it into a temporary
+  // HTMLImageElement so we know its natural dimensions for the overlay SVG.
+  toast('Building PDF…');
+  const floorRecords=[];
+  for(const f of FLOORS){
+    const src=await resolveFloorImage(f).catch(()=>f.img||'');
+    let cw=1000,ch=700;
+    if(src){
+      // Detect dimensions via a transient Image; this avoids depending on the
+      // currently-displayed map size.
+      try{
+        const dims=await new Promise((res,rej)=>{
+          const im=new Image();im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});im.onerror=rej;im.src=src;
+        });
+        cw=dims.w;ch=dims.h;
+      }catch(_){}
+    }
+    const overlay=buildFloorOverlaySVG(f,{naturalWidth:cw,naturalHeight:ch});
+    const cov=_sampleFloorCoverage(f,cw,ch);
+    const pct=cov.total?Math.round(cov.covered/cov.total*100):0;
+    floorRecords.push({floor:f,src,overlay,pct});
+  }
+  // Whole-building coverage rollup (weighted by floor sample counts).
+  let allC=0,allT=0;
+  for(const r of floorRecords){
+    const c=_sampleFloorCoverage(r.floor,r.overlay.cw,r.overlay.ch);
+    allC+=c.covered;allT+=c.total;
+  }
+  const buildingPct=allT?Math.round(allC/allT*100):0;
+
+  // Build per-floor section HTML.
+  const sigName={strong:'Strong',medium:'Medium',weak:'Weak'};
+  const floorSections=floorRecords.map((r,fi)=>{
+    const f=r.floor;
+    const aps=f.APS||[],sws=f.SWS||[],cams=f.CAMS||[],dzs=f.DZS||[];
+    const apTable=aps.length?`<h3>Access Points (${aps.length})</h3><table><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Freq</th><th>Pattern</th><th>Ch</th><th>TX</th><th>Signal</th><th>IP</th><th>MAC</th><th>Switch</th><th>VLAN</th></tr></thead><tbody>${aps.map((ap,i)=>{
+      const swName=(sws.find(s=>s.id===ap.swId)||{}).name||'—';
+      const patLbl=(AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni).label;
+      return `<tr><td>${i+1}</td><td><strong>${esc(ap.name)}</strong></td><td>${esc(ap.model||'—')}</td><td>${esc(ap.freq||'')}</td><td>${esc(patLbl)}</td><td class="mono">${esc(ap.channel||'auto')}</td><td class="mono">${esc(ap.txPower||'auto')}</td><td class="sig-${(ap.sig||'strong')[0]}">● ${sigName[ap.sig||'strong']}</td><td class="mono">${esc(ap.ip||'—')}</td><td class="mono">${esc(ap.mac||'—')}</td><td>${esc(swName)}</td><td>${esc(ap.vlan||'—')}</td></tr>`;
+    }).join('')}</tbody></table>`:'';
+    const camTable=cams.length?`<h3>Cameras (${cams.length})</h3><table><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Resolution</th><th>FoV</th><th>Range</th><th>Heading</th><th>IP</th><th>Switch</th><th>VLAN</th></tr></thead><tbody>${cams.map((c,i)=>{
+      const swName=(sws.find(s=>s.id===c.swId)||{}).name||'—';
+      const rangeM=Math.round((c.range||80)*((f.scaleM||100)/100));
+      return `<tr><td>${i+1}</td><td><strong>${esc(c.name)}</strong></td><td>${esc(c.model||'—')}</td><td class="mono">${esc(c.resolution||'')}</td><td class="mono">${c.fov||80}°</td><td class="mono">${rangeM} m</td><td class="mono">${c.heading||0}°</td><td class="mono">${esc(c.ip||'—')}</td><td>${esc(swName)}</td><td>${esc(c.vlan||'—')}</td></tr>`;
+    }).join('')}</tbody></table>`:'';
+    const swTable=sws.length?`<h3>Switches / Routers (${sws.length})</h3><table><thead><tr><th>Name</th><th>Model</th><th>IP</th><th>PoE Budget</th><th>Notes</th></tr></thead><tbody>${sws.map(sw=>{
+      let draw=0;
+      aps.forEach(a=>{if(a.swId===sw.id)draw+=AP_POE_W[a.model]||10;});
+      cams.forEach(c=>{if(c.swId===sw.id)draw+=(CAM_SPECS[c.model]||{}).poeW||0;});
+      const budgetStr=sw.poeBudget?`${draw.toFixed(0)} W / ${sw.poeBudget} W`:'—';
+      const over=sw.poeBudget&&draw>sw.poeBudget?' style="color:#c0382b;font-weight:700"':'';
+      return `<tr><td><strong>${esc(sw.name)}</strong></td><td>${esc(sw.model||'—')}</td><td class="mono">${esc(sw.ip||'—')}</td><td class="mono"${over}>${budgetStr}</td><td class="muted">${esc(sw.notes||'—')}</td></tr>`;
+    }).join('')}</tbody></table>`:'';
+    const dzTable=dzs.length?`<h3>Dead Zones (${dzs.length})</h3><table><thead><tr><th>Label</th></tr></thead><tbody>${dzs.map(dz=>`<tr><td>${esc(dz.label||'—')}</td></tr>`).join('')}</tbody></table>`:'';
+    const mapBlock=r.src
+      ? `<div class="map-wrap"><img src="${r.src}" alt="Map"/><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${r.overlay.cw} ${r.overlay.ch}" preserveAspectRatio="xMidYMid meet">${r.overlay.innerSVG}</svg></div>`
+      : `<div class="map-wrap empty"><span>No floor plan uploaded for this floor.</span></div>`;
+    return `<section class="floor-sec${fi>0?' page-break':''}">
+  <h2>${esc(f.name||('Floor '+(fi+1)))}<span class="floor-cov"> · ${r.pct}% coverage</span></h2>
+  <div class="floor-meta">${aps.length} AP${aps.length===1?'':'s'} · ${cams.length} camera${cams.length===1?'':'s'} · ${sws.length} switch${sws.length===1?'':'es'} · ${(f.WALLS||[]).length} wall${(f.WALLS||[]).length===1?'':'s'} · scale ${f.scaleM||100} m/100px</div>
+  ${mapBlock}
+  ${apTable}${camTable}${swTable}${dzTable}
+</section>`;
+  }).join('\n');
+
   const w=window.open('','_blank');
-  // Build the same AP/coverage/wall/dz SVG content used by HTML export.
-  // The PDF previously dropped this and only embedded the raw floor plan,
-  // which is why APs weren't appearing in the printed map.
-  const overlay=mapImg.src?buildMapOverlaySVG():null;
-  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>NOCTIS — Network Audit Report</title><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet"><style>
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>${esc(SETTINGS.company||'NOCTIS')} — ${esc(SETTINGS.reportTitle||'Network Audit Report')}</title><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet"><style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#efece5;font-family:'Rajdhani',sans-serif;color:#000;padding:44px 48px;min-height:100vh}
 .cover{text-align:left;padding:8px 0 40px;border-bottom:1px solid #000;margin-bottom:40px;position:relative}
@@ -1914,35 +2841,43 @@ body{background:#efece5;font-family:'Rajdhani',sans-serif;color:#000;padding:44p
 .tagline{font-size:11px;font-family:'Share Tech Mono',monospace;color:#000;letter-spacing:.2em;text-transform:uppercase;font-weight:700;margin-top:28px;padding-top:14px;border-top:1px solid rgba(0,0,0,.15)}
 .doc-title{font-size:22px;font-weight:600;color:#000;margin-top:32px;letter-spacing:.02em}
 .doc-sub{font-size:11px;font-family:'Share Tech Mono',monospace;color:rgba(0,0,0,.55);margin-top:6px;letter-spacing:.1em;text-transform:uppercase}
-h2{font-size:11px;color:#000;letter-spacing:.2em;text-transform:uppercase;margin:32px 0 14px;padding-bottom:8px;border-bottom:1px solid #000;font-weight:700;font-family:'Share Tech Mono',monospace}
-/* Map wrapper — image with SVG overlay laid on top, clipped so coverage rings
-   that extend past the floor plan edges don't bleed onto surrounding white space */
+.cover-stats{margin-top:24px;display:flex;gap:32px;font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase}
+.cover-stat strong{display:block;font-size:32px;font-family:'Rajdhani',sans-serif;font-weight:700;letter-spacing:-.02em;line-height:1}
+h2{font-size:13px;color:#000;letter-spacing:.2em;text-transform:uppercase;margin:36px 0 8px;padding-bottom:8px;border-bottom:1px solid #000;font-weight:700;font-family:'Share Tech Mono',monospace;display:flex;justify-content:space-between;align-items:baseline}
+.floor-cov{font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:600;letter-spacing:0;text-transform:none;color:#1e7d3c}
+h3{font-size:10px;color:rgba(0,0,0,.7);letter-spacing:.15em;text-transform:uppercase;margin:22px 0 10px;font-weight:700;font-family:'Share Tech Mono',monospace}
+.floor-sec.page-break{page-break-before:always}
+.floor-meta{font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:rgba(0,0,0,.55);margin-bottom:14px}
 .map-wrap{position:relative;width:100%;border:1px solid #000;background:#e9e6df;overflow:hidden;margin-bottom:8px}
 .map-wrap img{width:100%;display:block;filter:grayscale(.15) brightness(1.02)}
 .map-wrap svg{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none}
-table{width:100%;border-collapse:collapse;margin-bottom:24px;font-size:11px}
+.map-wrap.empty{aspect-ratio:1200/700;display:flex;align-items:center;justify-content:center;font-family:'Share Tech Mono',monospace;font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:rgba(0,0,0,.45)}
+table{width:100%;border-collapse:collapse;margin-bottom:18px;font-size:11px}
 th{background:#efece5;color:#000;font-family:'Share Tech Mono',monospace;font-size:8px;letter-spacing:.15em;text-transform:uppercase;text-align:left;padding:9px 11px;border-bottom:1px solid #000;font-weight:700}
 td{padding:8px 11px;border-bottom:1px solid rgba(0,0,0,.08);vertical-align:top;color:rgba(0,0,0,.8)}
-tr:hover td{background:rgba(0,0,0,.02)}
 .sig-s{color:#000;font-weight:700}.sig-m{color:rgba(0,0,0,.6);font-weight:600}.sig-w{color:rgba(0,0,0,.35);font-weight:500}
 .mono{font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:.02em}
 .muted{font-size:10px;color:rgba(0,0,0,.5)}
 .footer{margin-top:48px;padding-top:16px;border-top:1px solid #000;font-size:9px;color:#000;font-family:'Share Tech Mono',monospace;display:flex;justify-content:space-between;letter-spacing:.15em;text-transform:uppercase;font-weight:700}
 .print-btn{margin-top:24px;padding:12px 28px;background:#000;color:#efece5;border:none;border-radius:2px;font-size:11px;cursor:pointer;font-family:'Share Tech Mono',monospace;font-weight:700;letter-spacing:.2em;text-transform:uppercase}
 .print-btn:hover{background:rgba(0,0,0,.8)}
-@media print{body{padding:24px 28px;background:#fff}.print-btn{display:none}.cover{page-break-after:avoid}h2{page-break-after:avoid}table{page-break-inside:auto}tr{page-break-inside:avoid}}
+@media print{body{padding:24px 28px;background:#fff}.print-btn{display:none}.cover{page-break-after:always}h2,h3{page-break-after:avoid}table{page-break-inside:auto}tr{page-break-inside:avoid}.floor-sec{page-break-inside:avoid}}
 </style></head><body>
 <div class="cover">
   ${SETTINGS.metaLine?`<div class="cover-meta">${esc(SETTINGS.metaLine)}</div>`:''}
   <div class="logo">${esc(SETTINGS.company||'NOCTIS')}</div>
   ${SETTINGS.tagline?`<div class="tagline">${esc(SETTINGS.tagline)}</div>`:''}
-  <div class="doc-title">${esc(F().imgName||'WiFi Coverage Map')}</div>
-  <div class="doc-sub">${esc(SETTINGS.reportTitle||'Network Audit Report')} · ${new Date().toLocaleDateString(SETTINGS.locale||'en-GB')}${SETTINGS.contact?' · '+esc(SETTINGS.contact):''}</div>
+  <div class="doc-title">${esc(SETTINGS.reportTitle||'Network Audit Report')}</div>
+  <div class="doc-sub">${new Date().toLocaleDateString(SETTINGS.locale||'en-GB')}${SETTINGS.contact?' · '+esc(SETTINGS.contact):''}</div>
+  <div class="cover-stats">
+    <div class="cover-stat"><strong>${FLOORS.length}</strong>${FLOORS.length===1?'Floor':'Floors'}</div>
+    <div class="cover-stat"><strong>${FLOORS.reduce((n,f)=>n+(f.APS||[]).length,0)}</strong>Access points</div>
+    <div class="cover-stat"><strong>${FLOORS.reduce((n,f)=>n+(f.CAMS||[]).length,0)}</strong>Cameras</div>
+    <div class="cover-stat"><strong>${FLOORS.reduce((n,f)=>n+(f.SWS||[]).length,0)}</strong>Switches</div>
+    <div class="cover-stat"><strong>${buildingPct}%</strong>Coverage</div>
+  </div>
 </div>
-${mapImg.src?`<h2>Coverage Map</h2><div class="map-wrap"><img src="${mapImg.src}" alt="Map"/><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${overlay.cw} ${overlay.ch}" preserveAspectRatio="xMidYMid meet">${overlay.innerSVG}</svg></div>`:''}
-${APS().length?`<h2>Access Points (${APS().length})</h2><table><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Frequency</th><th>Ch</th><th>TX</th><th>Signal</th><th>IP</th><th>MAC</th><th>Port</th><th>VLAN</th><th>Notes</th></tr></thead><tbody>${APS().map((ap,i)=>`<tr><td>${i+1}</td><td><strong>${esc(ap.name)}</strong></td><td>${esc(ap.model||'—')}</td><td>${esc(ap.freq)}</td><td class="mono">${esc(ap.channel||'auto')}</td><td class="mono">${esc(ap.txPower||'auto')}</td><td class="sig-${ap.sig[0]}">● ${{strong:'Strong',medium:'Medium',weak:'Weak'}[ap.sig]}</td><td class="mono">${esc(ap.ip||'—')}</td><td class="mono">${esc(ap.mac||'—')}</td><td>${esc(ap.port||'—')}</td><td>${esc(ap.vlan||'—')}</td><td class="muted">${esc(ap.notes||'—')}</td></tr>`).join('')}</tbody></table>`:''}
-${SWS().length?`<h2>Switches &amp; Routers</h2><table><thead><tr><th>Name</th><th>Model</th><th>IP</th><th>Notes</th></tr></thead><tbody>${SWS().map(sw=>`<tr><td><strong>${esc(sw.name)}</strong></td><td>${esc(sw.model||'—')}</td><td class="mono">${esc(sw.ip||'—')}</td><td class="muted">${esc(sw.notes||'—')}</td></tr>`).join('')}</tbody></table>`:''}
-${DZS().length?`<h2>Dead Zones</h2><table><thead><tr><th>Label</th></tr></thead><tbody>${DZS().map(dz=>`<tr><td>${esc(dz.label||'—')}</td></tr>`).join('')}</tbody></table>`:''}
+${floorSections}
 <div class="footer"><span>${esc(SETTINGS.company||'NOCTIS')}${SETTINGS.contact?' · '+esc(SETTINGS.contact):''}</span><span>Generated ${new Date().toLocaleString(SETTINGS.locale||'en-GB')}</span></div>
 <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
 </body></html>`);
@@ -2033,8 +2968,10 @@ renderFloorTabs();renderList();renderRP();applySettingsToBrand();
 // One delegated listener dispatches to the right handler.
 const CLICK_ACTIONS={
   'open-upload':   ()=>document.getElementById('file-up').click(),
+  'open-svg':      ()=>document.getElementById('svg-up').click(),
   'open-load':     ()=>document.getElementById('load-up').click(),
   'save':          ()=>saveProject(),
+  'share-link':    ()=>shareLink(),
   'new-project':   ()=>newProject(),
   'set-mode':      (arg)=>setMode(arg),
   'zoom-in':       ()=>smoothZoom(+.18),
@@ -2043,7 +2980,10 @@ const CLICK_ACTIONS={
   'toggle-ol':     ()=>toggleOL(),
   'toggle-heat':   ()=>toggleHeat(),
   'toggle-grid':   ()=>toggleGrid(),
+  'toggle-cables': ()=>toggleCables(),
   'toggle-coverage':()=>toggleCoverage(),
+  'auto-place':    ()=>autoPlaceAPs(),
+  'show-poe':      ()=>showPoESummary(),
   'undo':          ()=>undo(),
   'redo':          ()=>redo(),
   'toggle-present':()=>togglePresent(),
@@ -2058,6 +2998,7 @@ const CLICK_ACTIONS={
   // Item/panel actions (previously inline)
   'set-sig':       (arg)=>setSig(arg),
   'set-color':     (arg)=>setApColor(arg),
+  'set-cam-color': (arg)=>setCamColor(arg),
   'duplicate':     ()=>duplicateSelected(),
   'ask-del':       ()=>askDel(),
   'quick-del':     (_,e,t)=>{e.stopPropagation();qDel(t.dataset.id,t.dataset.type);},
@@ -2074,6 +3015,7 @@ document.addEventListener('change',e=>{
   if(!t)return;
   const a=t.dataset.changeAction;
   if(a==='upload-map')uploadMap(t);
+  else if(a==='import-svg-walls')importSvgWalls(t);
   else if(a==='load-project')loadProject(t);
   else if(a==='toggle-lock')toggleLock();
   else if(a==='upd-wall')updWall();
@@ -2096,10 +3038,15 @@ document.addEventListener('input',e=>{
   if(a==='update-scale')updateScale();
   else if(a==='upd-ap')updAP();
   else if(a==='upd-ap-r')updR(t.value);
+  else if(a==='upd-ap-heading')updAPHeading(t.value);
   else if(a==='upd-dz')updDZ();
   else if(a==='upd-dz-r')updDZR(t.value);
   else if(a==='upd-sw')updSW();
   else if(a==='upd-sw-size')updSWSize(t.value);
+  else if(a==='upd-cam')updCam();
+  else if(a==='upd-cam-fov')updCamFov(t.value);
+  else if(a==='upd-cam-range')updCamRange(t.value);
+  else if(a==='upd-cam-heading')updCamHeading(t.value);
   else if(a==='sb-search'){
     searchQuery=t.value;
     // Reflect "has-text" state on the row so the clear (×) button shows up
@@ -2140,13 +3087,19 @@ document.addEventListener('keydown',e=>{
     if(wallStart){wallStart=null;wallHover=null;renderWallPreview();return;}
     desel();return;
   }
-  // Delete selected item
-  if((e.key==='Delete'||e.key==='Backspace')&&selId){e.preventDefault();askDel();return;}
+  // Delete selected item (bulk-delete if multiple are selected)
+  if((e.key==='Delete'||e.key==='Backspace')&&selection.size){
+    e.preventDefault();
+    if(selection.size>1)deleteSelection();
+    else askDel();
+    return;
+  }
   // Mode switches (matches buttons)
   if(e.key==='a'||e.key==='A'){setMode('add');return;}
   if(e.key==='s'||e.key==='S'){setMode('sel');return;}
   if(e.key==='d'||e.key==='D'){setMode('dz');return;}
   if(e.key==='w'||e.key==='W'){setMode('sw');return;}
+  if(e.key==='c'||e.key==='C'){setMode('cam');return;}
   if(e.key==='r'||e.key==='R'){setMode('ruler');return;}
   if(e.key==='l'||e.key==='L'){setMode('wall');return;}
   if(e.key==='p'||e.key==='P'){togglePresent();return;}
@@ -2398,5 +3351,11 @@ function setSidebarWidth(px){
   handle.addEventListener('dblclick',()=>{setSidebarWidth(220);setTimeout(fitZoom,30);});
 })();
 
-// Small delay to let browser lay out the image, then offer to restore
-setTimeout(()=>{initImage();tryRestoreAutosave();},100);
+// Small delay to let browser lay out the image, then offer to restore.
+// If the URL has a #p=... payload, that takes priority — autosave restore
+// only triggers when there's no shared project to load.
+setTimeout(async ()=>{
+  initImage();
+  const loaded=await tryLoadFromHash();
+  if(!loaded)tryRestoreAutosave();
+},100);
