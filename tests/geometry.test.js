@@ -5,11 +5,17 @@ import {
   computeCoveragePath,
   coveredThroughWalls,
   sampleFloorCoverage,
+  sampleRoamingOverlap,
   WALL_MATERIALS,
   BAND_LOSS,
   bandLossMultiplier,
   wallToPx,
   dbmAt,
+  snrAt,
+  mcsFromSnr,
+  mbpsAt,
+  effectiveEirp,
+  dbmAtThroughSlab,
 } from '../files/src/geometry.js';
 
 describe('attenuationFactor',()=>{
@@ -34,7 +40,6 @@ describe('attenuationFactor',()=>{
 
 describe('rayWallIntersect',()=>{
   test('perpendicular crossing returns midpoint t',()=>{
-    // ray from (0,0)→(10,0); wall vertical at x=5
     const t=rayWallIntersect(0,0,10,0, 5,-5, 5,5);
     expect(t).toBeCloseTo(0.5,5);
   });
@@ -62,13 +67,11 @@ describe('coveredThroughWalls',()=>{
     expect(coveredThroughWalls(ap,300,100,w,h,[])).toBe(false);
   });
   test('thick concrete wall blocks short range',()=>{
-    const wall={x1:120,y1:0,x2:120,y2:200,material:'concrete'}; // 15 dB
-    // distance from (100,100) to (150,100) = 50; with concrete: 100*atten(15) = ~3px
+    const wall={x1:120,y1:0,x2:120,y2:200,material:'concrete'};
     expect(coveredThroughWalls(ap,150,100,w,h,[wall])).toBe(false);
   });
   test('drywall barely affects coverage',()=>{
-    const wall={x1:120,y1:0,x2:120,y2:200,material:'drywall'}; // 3 dB
-    // 100 * atten(3) = 50; sample distance = 50, so right at edge
+    const wall={x1:120,y1:0,x2:120,y2:200,material:'drywall'};
     expect(coveredThroughWalls(ap,140,100,w,h,[wall])).toBe(true);
   });
 });
@@ -77,7 +80,6 @@ describe('computeCoveragePath',()=>{
   test('no walls → polygon approximating circle',()=>{
     const path=computeCoveragePath({fx:0.5,fy:0.5,r:50},200,200,[]);
     expect(path).toMatch(/^M[\d.,LZ -]+Z$/);
-    // Should have all 72 points (one M then 71 L)
     expect((path.match(/L/g)||[]).length).toBe(71);
   });
   test('zero-image-size returns empty path',()=>{
@@ -125,10 +127,6 @@ describe('bandLossMultiplier',()=>{
     expect(bandLossMultiplier(undefined)).toBe(1.0);
   });
   test('2.4 GHz coverage reaches further through walls than 5 GHz',()=>{
-    // AP at center of 200x200 image, r=100. One drywall wall (3 dB) at x=120.
-    // Sample at (160, 100) is 60 px from AP, through one drywall.
-    //   5 GHz:  effective = 100 * 0.5^(3/3)    = 50    → not covered (50 < 60)
-    //   2.4:    effective = 100 * 0.5^(1.8/3) ≈ 65.9  → covered (65.9 > 60)
     const ap={fx:0.5,fy:0.5,r:100};
     const walls=[{x1:120,y1:0,x2:120,y2:200,material:'drywall'}];
     expect(coveredThroughWalls(ap,160,100,200,200,walls,1.0)).toBe(false);
@@ -170,19 +168,15 @@ describe('BAND_LOSS table',()=>{
 describe('computeCoveragePath with directional pattern',()=>{
   test('omni covers all angles',()=>{
     const path=computeCoveragePath({fx:0.5,fy:0.5,r:50},200,200,[],{arcDeg:180,headingDeg:0});
-    // 72 points, all close to r distance from centre.
     const matches=path.match(/-?\d+\.\d+,-?\d+\.\d+/g);
     expect(matches.length).toBe(72);
   });
   test('narrow sector (arcDeg=15) leaves most rays collapsed near the centre',()=>{
-    // 15° half-width = a 30° wedge — about 30/360 = 8% of rays at full reach.
-    // The rest should be a near-zero stub right next to the centre.
     const path=computeCoveragePath({fx:0.5,fy:0.5,r:100},200,200,[],{arcDeg:15,headingDeg:0});
-    // Strip the leading M and the trailing Z, split on L.
     const pts=path.slice(1,-1).split(/[ML]/).filter(Boolean).map(p=>p.split(',').map(Number));
     const farFromCentre=pts.filter(([x,y])=>Math.hypot(x-100,y-100)>20).length;
-    expect(farFromCentre).toBeLessThan(20);  // most should be near centre
-    expect(farFromCentre).toBeGreaterThan(0); // but some should reach
+    expect(farFromCentre).toBeLessThan(20);
+    expect(farFromCentre).toBeGreaterThan(0);
   });
 });
 
@@ -203,17 +197,96 @@ describe('dbmAt',()=>{
     expect(near).toBeGreaterThan(far);
   });
   test('directional gating excludes points outside the cone',()=>{
-    // Cone centred at heading=0 (east), arc 15° → point due south is excluded.
     expect(dbmAt(ap,100,180,200,200,[],{arcDeg:15,headingDeg:0})).toBeNull();
-    // Point due east at the same distance is inside the cone.
     expect(dbmAt(ap,180,100,200,200,[],{arcDeg:15,headingDeg:0})).not.toBeNull();
   });
   test('walls drop the dBm value',()=>{
     const walls=[{x1:110,y1:0,x2:110,y2:200,material:'brick'}];
     const open=dbmAt(ap,120,100,200,200,[]);
     const blocked=dbmAt(ap,120,100,200,200,walls);
-    // Either it's null (walls killed coverage) or significantly weaker.
     if(blocked!==null)expect(blocked).toBeLessThan(open-5);
+  });
+  test('EIRP boost raises the dBm reading',()=>{
+    const base=dbmAt(ap,120,100,200,200,[]);
+    const boosted=dbmAt(ap,120,100,200,200,[],{eirpDbm:30});
+    expect(boosted-base).toBeCloseTo(10,4);
+  });
+  test('itu-indoor model attenuates faster than log-distance',()=>{
+    const logd=dbmAt(ap,160,100,200,200,[],{model:'logd'});
+    const itu =dbmAt(ap,160,100,200,200,[],{model:'itu-indoor'});
+    expect(itu).toBeLessThan(logd);
+  });
+  test('multi-wall model attenuates even faster than itu-indoor',()=>{
+    const itu=dbmAt(ap,160,100,200,200,[],{model:'itu-indoor'});
+    const mw =dbmAt(ap,160,100,200,200,[],{model:'multi-wall'});
+    expect(mw).toBeLessThan(itu);
+  });
+});
+
+describe('effectiveEirp',()=>{
+  test('default: 20 dBm txPower, 0 gain, 0 loss = 20 dBm EIRP',()=>{
+    expect(effectiveEirp({fx:0.5,fy:0.5,r:100})).toBe(20);
+  });
+  test('adds antenna gain and subtracts cable loss',()=>{
+    expect(effectiveEirp({txPowerDbm:23,antennaGainDbi:5,cableLossDb:1.5})).toBeCloseTo(26.5,5);
+  });
+});
+
+describe('snrAt + mcsFromSnr + mbpsAt',()=>{
+  const ap={fx:0.5,fy:0.5,r:100,freq:'5 GHz only'};
+  test('SNR = dBm − noiseFloor',()=>{
+    const dbm=dbmAt(ap,120,100,200,200,[]);
+    const snr=snrAt(ap,120,100,200,200,[]);
+    expect(snr-dbm).toBeCloseTo(95,5);
+  });
+  test('null when out of range',()=>{
+    expect(snrAt(ap,250,100,200,200,[])).toBeNull();
+    expect(mbpsAt(ap,250,100,200,200,[])).toBe(0);
+  });
+  test('SNR ≥ 28 dB returns MCS 7 or higher',()=>{
+    expect(mcsFromSnr(28)).toBeGreaterThanOrEqual(7);
+    expect(mcsFromSnr(34)).toBeGreaterThanOrEqual(9);
+  });
+  test('SNR < 5 dB returns MCS -1 (no link)',()=>{
+    expect(mcsFromSnr(3)).toBe(-1);
+  });
+  test('mbpsAt scales with band stream multiplier (6 GHz > 5 GHz > 2.4 GHz)',()=>{
+    const a24={...ap,freq:'2.4 GHz only',r:100};
+    const a5 ={...ap,freq:'5 GHz only', r:100};
+    const a6 ={...ap,freq:'6 GHz (WiFi 6E)',r:100};
+    const m24=mbpsAt(a24,110,100,200,200,[]);
+    const m5 =mbpsAt(a5 ,110,100,200,200,[]);
+    const m6 =mbpsAt(a6 ,110,100,200,200,[]);
+    expect(m6).toBeGreaterThan(m5);
+    expect(m5).toBeGreaterThan(m24);
+  });
+});
+
+describe('sampleRoamingOverlap',()=>{
+  test('zero APs → 0/0',()=>{
+    expect(sampleRoamingOverlap({APS:[],WALLS:[]},200,200)).toEqual({covered:0,total:0});
+  });
+  test('one AP → 0/0 (need at least two)',()=>{
+    expect(sampleRoamingOverlap({APS:[{fx:.5,fy:.5,r:200}],WALLS:[]},200,200).covered).toBe(0);
+  });
+  test('two overlapping APs produce a non-zero overlap area',()=>{
+    const r=sampleRoamingOverlap({APS:[
+      {fx:0.4,fy:0.5,r:300},
+      {fx:0.6,fy:0.5,r:300},
+    ],WALLS:[]},200,200,-90);
+    expect(r.covered).toBeGreaterThan(0);
+  });
+});
+
+describe('dbmAtThroughSlab',()=>{
+  test('returns null beyond range',()=>{
+    expect(dbmAtThroughSlab({fx:0.5,fy:0.5,r:100},250,100,200,200,18,1.0)).toBeNull();
+  });
+  test('slab attenuation drops dBm vs direct',()=>{
+    const ap={fx:0.5,fy:0.5,r:200};
+    const direct=dbmAt(ap,150,100,200,200,[]);
+    const throughSlab=dbmAtThroughSlab(ap,150,100,200,200,18,1.0);
+    if(throughSlab!==null)expect(throughSlab).toBeLessThan(direct-10);
   });
 });
 

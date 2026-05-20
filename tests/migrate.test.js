@@ -11,7 +11,7 @@ describe('migrateProject',()=>{
   test('throws on missing floors',()=>{
     expect(()=>migrateProject({version:1})).toThrow(/floors/i);
   });
-  test('v1 → v5: fills AP defaults',()=>{
+  test('v1 → current: fills AP defaults',()=>{
     const [data]=migrateProject({version:1,floors:[{id:'f1',APS:[{id:'ap1',fx:.5,fy:.5}],DZS:[],SWS:[],WALLS:[]}]});
     const ap=data.floors[0].APS[0];
     expect(ap.model).toBe('U6 Pro');
@@ -23,11 +23,11 @@ describe('migrateProject',()=>{
     expect(ap.color).toBe('');
     expect(data.version).toBe(PROJECT_VERSION);
   });
-  test('v3 → v5: adds WALLS array per floor',()=>{
+  test('v3 → current: adds WALLS array per floor',()=>{
     const [data]=migrateProject({version:3,floors:[{id:'f1',APS:[],DZS:[],SWS:[]}]});
     expect(Array.isArray(data.floors[0].WALLS)).toBe(true);
   });
-  test('v4 → v5: adds settings + imgId',()=>{
+  test('v4 → current: adds settings + imgId',()=>{
     const [data]=migrateProject({version:4,floors:[{id:'f1',APS:[],DZS:[],SWS:[],WALLS:[]}]});
     expect(data.settings.company).toBe(DEFAULT_SETTINGS.company);
     expect(data.floors[0].imgId).toBe('');
@@ -36,9 +36,9 @@ describe('migrateProject',()=>{
     const [data]=migrateProject({version:5,settings:{company:'ACME',contact:'x@y.com'},floors:[{APS:[],DZS:[],SWS:[],WALLS:[]}]});
     expect(data.settings.company).toBe('ACME');
     expect(data.settings.contact).toBe('x@y.com');
-    expect(data.settings.locale).toBe(DEFAULT_SETTINGS.locale);  // default for unset
+    expect(data.settings.locale).toBe(DEFAULT_SETTINGS.locale);
   });
-  test('settings ignores non-string values',()=>{
+  test('settings ignores non-string values for string fields',()=>{
     const [data]=migrateProject({version:5,settings:{company:123,contact:null,tagline:{}},floors:[{APS:[],DZS:[],SWS:[],WALLS:[]}]});
     expect(data.settings.company).toBe(DEFAULT_SETTINGS.company);
   });
@@ -81,6 +81,10 @@ describe('syncNidFromFloors',()=>{
     const floors=[{APS:[{id:'apX'},{id:'ap5'}],DZS:[],SWS:[],WALLS:[]}];
     expect(syncNidFromFloors(floors)).toBe(6);
   });
+  test('also walks ANNOS / SAMPLES (v8)',()=>{
+    const floors=[{APS:[],DZS:[],SWS:[],WALLS:[],ANNOS:[{id:'an50'}],SAMPLES:[{id:'s60'}]}];
+    expect(syncNidFromFloors(floors)).toBe(61);
+  });
 });
 
 describe('migrateProject — v5 → v6 (per-floor scaleM + fractional walls)',()=>{
@@ -91,7 +95,6 @@ describe('migrateProject — v5 → v6 (per-floor scaleM + fractional walls)',()
     });
     expect(data.floors[0].scaleM).toBe(150);
     expect(data.floors[1].scaleM).toBe(150);
-    // project-level scaleM is removed
     expect(data.scaleM).toBeUndefined();
   });
   test('missing scaleM defaults to 100',()=>{
@@ -131,7 +134,7 @@ describe('migrateProject — v5 → v6 (per-floor scaleM + fractional walls)',()
   });
 });
 
-describe('migrateProject — new SETTINGS keys',()=>{
+describe('migrateProject — settings keys',()=>{
   test('coverageOpacity defaults to 100',()=>{
     const [data]=migrateProject({version:5,floors:[{APS:[],DZS:[],SWS:[],WALLS:[]}]});
     expect(data.settings.coverageOpacity).toBe(100);
@@ -184,6 +187,69 @@ describe('migrateProject — v6 → v7 (cameras, antenna patterns, PoE)',()=>{
   test('switches keep an explicit poeBudget',()=>{
     const [data]=migrateProject({version:7,floors:[{APS:[],DZS:[],SWS:[{id:'sw1',name:'SW-1',poeBudget:250}],WALLS:[]}]});
     expect(data.floors[0].SWS[0].poeBudget).toBe(250);
+  });
+});
+
+describe('migrateProject — v7 → v8 (antenna fidelity, regions, annotations, samples, revisions)',()=>{
+  test('APs gain antennaGainDbi seeded from the model table',()=>{
+    const [data]=migrateProject({version:7,floors:[{APS:[{id:'ap1',fx:.5,fy:.5,r:80,model:'U6 Pro'}],DZS:[],SWS:[],WALLS:[]}]});
+    const ap=data.floors[0].APS[0];
+    expect(ap.antennaGainDbi).toBeGreaterThan(0);
+    expect(ap.cableLossDb).toBe(0);
+    expect(ap.txPowerDbm).toBe(20);
+    expect(ap.mountHeightM).toBeGreaterThan(0);
+    expect(typeof ap.downtiltDeg).toBe('number');
+    expect(ap.capacityClients).toBeGreaterThan(0);
+    expect(typeof ap.comment).toBe('string');
+  });
+  test('APs keep explicit antenna fidelity overrides',()=>{
+    const [data]=migrateProject({version:8,floors:[{APS:[{id:'ap1',fx:.5,fy:.5,r:80,antennaGainDbi:8,cableLossDb:2,txPowerDbm:23,mountHeightM:3.5,downtiltDeg:10,capacityClients:60}],DZS:[],SWS:[],WALLS:[]}]});
+    const ap=data.floors[0].APS[0];
+    expect(ap.antennaGainDbi).toBe(8);
+    expect(ap.cableLossDb).toBe(2);
+    expect(ap.txPowerDbm).toBe(23);
+    expect(ap.mountHeightM).toBe(3.5);
+    expect(ap.downtiltDeg).toBe(10);
+    expect(ap.capacityClients).toBe(60);
+  });
+  test('every floor gets ANNOS + SAMPLES arrays',()=>{
+    const [data]=migrateProject({version:7,floors:[{APS:[],DZS:[],SWS:[],WALLS:[]}]});
+    expect(Array.isArray(data.floors[0].ANNOS)).toBe(true);
+    expect(Array.isArray(data.floors[0].SAMPLES)).toBe(true);
+  });
+  test('project-level revisions array is created',()=>{
+    const [data]=migrateProject({version:7,floors:[{APS:[],DZS:[],SWS:[],WALLS:[]}]});
+    expect(Array.isArray(data.revisions)).toBe(true);
+  });
+  test('new settings keys are defaulted',()=>{
+    const [data]=migrateProject({version:7,floors:[{APS:[],DZS:[],SWS:[],WALLS:[]}]});
+    expect(data.settings.propagationModel).toBe('logd');
+    expect(data.settings.regulatoryRegion).toBe('FCC-US');
+    expect(data.settings.noiseFloorDbm).toBe(-95);
+    expect(data.settings.floorSlabAttenDb).toBe(18);
+    expect(data.settings.showFloorLeakage).toBe(false);
+    expect(data.settings.heatmapMode).toBe('rssi');
+    expect(data.settings.heatmapBand).toBe('all');
+    expect(data.settings.language).toBe('en');
+  });
+  test('new boolean settings respect explicit values',()=>{
+    const [data]=migrateProject({version:8,settings:{showFloorLeakage:true,showRoamingOverlap:true},floors:[{APS:[],DZS:[],SWS:[],WALLS:[]}]});
+    expect(data.settings.showFloorLeakage).toBe(true);
+    expect(data.settings.showRoamingOverlap).toBe(true);
+  });
+  test('all device types gain a comment string',()=>{
+    const [data]=migrateProject({version:7,floors:[{
+      APS:[{id:'ap1',fx:.5,fy:.5,r:80}],
+      DZS:[{id:'dz1',fx:.5,fy:.5,r:40}],
+      SWS:[{id:'sw1',name:'SW-1'}],
+      CAMS:[{id:'cm1',fx:.5,fy:.5}],
+      WALLS:[{material:'drywall',fx1:0,fy1:0,fx2:1,fy2:1}],
+    }]});
+    expect(data.floors[0].APS[0].comment).toBe('');
+    expect(data.floors[0].DZS[0].comment).toBe('');
+    expect(data.floors[0].SWS[0].comment).toBe('');
+    expect(data.floors[0].CAMS[0].comment).toBe('');
+    expect(data.floors[0].WALLS[0].comment).toBe('');
   });
 });
 

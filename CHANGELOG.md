@@ -6,6 +6,73 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.0.0] — 2026-05-20
+
+The "professional tool" release. NOCTIS gains a physically grounded RF
+engine (SNR / throughput / capacity, selectable propagation models,
+regulatory regions, antenna fidelity, floor-to-floor leakage), survey
+import for predicted-vs-measured validation, design-review workflow
+(revisions, diff, per-device comments, annotations), professional
+deliverables (BoM / cable-schedule CSV, per-AP install sheets, branded
+exports), and an engineering baseline (JSDoc type-checking, Playwright
+E2E, i18n, a plugin API). Still a zero-dependency static browser app.
+
+### Added
+- **RF realism.** Per-pixel SNR, MCS index, and estimated throughput
+  in addition to RSSI. Heatmap can render any of the four metrics, and
+  a capacity-per-AP client estimate informs planning.
+- **Selectable propagation models.** Log-distance, ITU-R P.1238 indoor,
+  and COST-231 multi-wall — pick the model that matches the building.
+- **Regulatory regions.** FCC (US), ETSI (EU), Japan, Australia/NZ,
+  India, and Brazil presets constrain channels, EIRP, and DFS.
+- **Antenna fidelity.** Per-AP antenna gain, cable loss, mount height,
+  and downtilt feed an effective-EIRP calculation.
+- **Floor-to-floor RF leakage.** Optional layer shows neighbouring
+  floors' signal bleeding through the slab (configurable attenuation).
+- **Per-band heatmap + roaming overlap.** Filter the heatmap by band
+  (2.4 / 5 / 6 GHz) and highlight where ≥2 APs deliver ≥ -67 dBm so
+  clients can roam.
+- **Auto channel + Tx-power planning.** Graph-colouring channel
+  assignment and greedy per-AP power tuning, region-aware.
+- **Survey CSV import.** Import measured RSSI samples; dots are colour-
+  coded and flagged red where measured deviates materially from
+  predicted.
+- **AP-on-stick live mode.** Drag a candidate AP and read live
+  coverage / overlap feedback before committing.
+- **Annotation layer.** Text labels, arrows, and dimension lines with
+  live metre readouts.
+- **Revisions + diff.** Snapshot the project and compare any two
+  revisions to see what changed.
+- **Per-device comments.** Every AP, camera, switch, dead zone, and
+  wall carries a free-text note that flows into exports.
+- **BoM + cable-schedule CSV export.** One-click bill of materials and
+  cable schedule for procurement and installers.
+- **Per-AP install sheets.** A printable per-AP sheet (location,
+  radio config, switch port, comment) for the field team.
+- **Customer branding.** Project logo, company / tagline / footer line,
+  and architect's-scale presets carried into HTML and PDF exports.
+- **i18n framework.** All UI strings routed through a no-dependency
+  `t()` helper with an English bundle; new languages drop in as bundles.
+- **Plugin API for vendor catalogs.** Paste a custom AP / switch /
+  camera catalog to extend the model lists without a code change.
+- **Playwright E2E.** A smoke suite boots the app and exercises mode
+  switching, the settings modal, heatmap pills, and the help dialog.
+
+### Changed
+- Project schema bumped to **v8**. The migrator seeds antenna /
+  radio / comment fields on devices and adds `ANNOS`, `SAMPLES`, and
+  project-level `revisions`. Old projects (v1–v7) open cleanly.
+- **Type-checked.** Pure modules in `files/src/` are checked with
+  `tsc --checkJs` via JSDoc annotations (no `.ts` rename); `npm run
+  typecheck` runs in CI.
+- CI matrix expanded: unit tests on Node 18/20/22, plus dedicated
+  type-check, Playwright E2E, and production-build jobs.
+- Accessibility: modals are `role="dialog"` with focus capture /
+  restore and a Tab trap; live regions announce hints and toasts.
+
+[Unreleased]: https://github.com/SP1R4/noctis-wifi-planner/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/SP1R4/noctis-wifi-planner/releases/tag/v3.0.0
+
 ## [2.0.0] — 2026-05-19
 
 A meaty release that pushes NOCTIS from "WiFi coverage planner" into
@@ -56,7 +123,6 @@ URLs, and a per-floor PDF report.
 - Bundle size: 121 KB / 36 KB gzipped (was 84 / 26 KB) — +20 KB for
   everything above. Still zero runtime dependencies.
 
-[Unreleased]: https://github.com/SP1R4/noctis-wifi-planner/compare/v2.0.0...HEAD
 [2.0.0]: https://github.com/SP1R4/noctis-wifi-planner/releases/tag/v2.0.0
 
 ## [1.0.0] — 2026-05-18

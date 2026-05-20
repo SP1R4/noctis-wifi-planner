@@ -18,6 +18,8 @@
     <input type="file" id="file-up" accept="image/*,.svg" style="display:none" data-change-action="upload-map"/>
     <button class="btn" data-action="open-svg" title="Import walls from an SVG floor-plan">↺ Walls SVG</button>
     <input type="file" id="svg-up" accept=".svg,image/svg+xml" style="display:none" data-change-action="import-svg-walls"/>
+    <button class="btn" data-action="open-survey" title="Import RSSI survey samples from a CSV">↺ Survey CSV</button>
+    <input type="file" id="survey-up" accept=".csv,text/csv" style="display:none" data-change-action="import-survey-csv"/>
     <button class="btn" data-action="save">💾 Save</button>
     <button class="btn" data-action="open-load">📂 Load</button>
     <button class="btn" data-action="share-link" title="Copy a shareable URL of the current project (images not included)">🔗 Share</button>
@@ -33,7 +35,12 @@
     <button class="btn btn-primary" id="btn-pres" data-action="toggle-present" title="Presentation mode (P)">▶ Present</button>
     <button class="btn btn-primary" data-action="export" title="Export HTML report">↓ Export</button>
     <button class="btn btn-primary" data-action="pdf" title="Export PDF">⎙ PDF</button>
+    <button class="btn" data-action="export-bom" title="Export Bill of Materials (CSV)">≡ BoM</button>
+    <button class="btn" data-action="export-cables" title="Export cable schedule (CSV)">∼ Cables CSV</button>
+    <button class="btn" data-action="install-sheets" title="Per-AP install sheets PDF">⎙ Install sheets</button>
     <button class="btn btn-icon-only" id="btn-theme" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle theme">☾</button>
+    <button class="btn btn-icon-only" data-action="show-revisions" title="Project revisions" aria-label="Revisions">⟲</button>
+    <button class="btn btn-icon-only" data-action="show-plugins" title="Custom vendor catalogs" aria-label="Plugins">+</button>
     <button class="btn btn-icon-only" data-action="show-settings" title="Project settings" aria-label="Settings">⚙</button>
     <button class="btn btn-icon-only" data-action="show-help" title="Keyboard shortcuts (?)" aria-label="Help">?</button>
   </div>
@@ -49,6 +56,12 @@
       <button class="btn-tool" id="btn-cam" data-action="set-mode" data-arg="cam" title="Camera (C)" aria-label="Camera">◉</button>
       <button class="btn-tool" id="btn-ruler" data-action="set-mode" data-arg="ruler" title="Ruler (R)" aria-label="Ruler">↔</button>
       <button class="btn-tool" id="btn-wall" data-action="set-mode" data-arg="wall" title="Wall (L)" aria-label="Wall">▌</button>
+      <button class="btn-tool" id="btn-anno" data-action="set-mode" data-arg="anno" title="Annotation (N)" aria-label="Annotation">✎</button>
+    </div>
+    <div class="anno-sub-bar" id="anno-sub-bar" style="display:none" role="group" aria-label="Annotation type">
+      <button class="btn-tool active" data-action="anno-sub" data-arg="text" data-anno-sub="text" title="Text label" aria-label="Text label">T</button>
+      <button class="btn-tool" data-action="anno-sub" data-arg="arrow" data-anno-sub="arrow" title="Arrow" aria-label="Arrow">→</button>
+      <button class="btn-tool" data-action="anno-sub" data-arg="dim" data-anno-sub="dim" title="Dimension line" aria-label="Dimension line">↔</button>
     </div>
     <div class="tsep"></div>
 
@@ -73,8 +86,18 @@
       <span class="toggle-lbl">Cables</span>
       <span class="toggle-switch" aria-hidden="true"></span>
     </button>
+    <button class="toggle" id="btn-roaming" data-action="toggle-roaming" title="Show roaming overlap layer">
+      <span class="toggle-lbl">Roaming</span>
+      <span class="toggle-switch" aria-hidden="true"></span>
+    </button>
+    <div class="heat-mode-cluster" role="group" aria-label="Heatmap display">
+      <button class="heat-pill" data-action="cycle-heatmap-mode" id="heat-mode-pill" title="Cycle heatmap metric" aria-label="Cycle heatmap metric">RSSI (dBm)</button>
+      <button class="heat-pill" data-action="cycle-heatmap-band" id="heat-band-pill" title="Cycle heatmap band filter" aria-label="Cycle heatmap band filter">All</button>
+    </div>
     <div class="tsep"></div>
     <button class="btn" data-action="auto-place" title="Auto-place APs to reach target coverage">✦ Auto-place</button>
+    <button class="btn" data-action="auto-channel" title="Auto-assign channels (graph coloring)">⌁ Auto-channel</button>
+    <button class="btn" data-action="auto-power" title="Auto-tune per-AP Tx power">⌁ Auto-power</button>
     <button class="btn" data-action="show-poe" title="PoE budget summary">⚡ PoE</button>
 
     <div class="topbar-spacer"></div>
@@ -123,7 +146,7 @@
         <div class="es-line">Upload a floor plan to begin</div>
         <div class="es-sub">Click <strong>↑ Upload Map</strong> above · Press <kbd>?</kbd> for shortcuts</div>
       </div>
-      <div class="hint-bar" id="hint-bar">Click map to place an AP</div>
+      <div class="hint-bar" id="hint-bar" role="status" aria-live="polite">Click map to place an AP</div>
       <div id="vp" class="cur-cross">
         <div id="cv">
           <img id="mi" src="" alt="Map"/>
@@ -131,9 +154,13 @@
           <svg id="sl" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <filter id="gf"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+              <marker id="anno-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 Z" fill="currentColor"/>
+              </marker>
             </defs>
             <g id="grid-layer"></g>
             <g id="heat-layer"></g>
+            <g id="roaming-layer"></g>
             <g id="ol-layer"></g>
             <g id="wall-layer"></g>
             <g id="cable-layer"></g>
@@ -142,6 +169,9 @@
             <g id="cam-layer"></g>
             <g id="dz-layer"></g>
             <g id="ch-overlap-layer"></g>
+            <g id="sample-layer"></g>
+            <g id="anno-layer"></g>
+            <g id="anno-preview-layer"></g>
             <g id="ruler-layer"></g>
             <g id="marquee-layer"></g>
           </svg>
@@ -159,6 +189,7 @@
         <div class="sbar-line" id="sbar-line"></div>
         <div class="sbar-txt" id="sbar-txt"></div>
       </div>
+      <div id="ap-stick-readout" style="display:none" aria-live="polite"></div>
     </div>
 
     <!-- Right panel -->
@@ -169,9 +200,9 @@
   </div>
 </div>
 
-<div id="toast"></div>
-<div id="ctx-menu"></div>
-<div id="mbg"><div id="mdl">
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="ctx-menu" role="menu"></div>
+<div id="mbg"><div id="mdl" role="dialog" aria-modal="true" aria-labelledby="mdl-title">
   <div class="mdl-title" id="mdl-title">Confirm</div>
   <div class="mdl-body" id="mdl-body"></div>
   <div class="mdl-actions">

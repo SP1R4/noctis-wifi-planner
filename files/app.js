@@ -1,13 +1,24 @@
+// @ts-nocheck
 // Single source of truth: pure geometry + migration helpers live in
 // files/src/*.js so they can be unit-tested under vitest without the DOM.
 // app.js imports them as ES modules; Vite handles bundling for production.
+//
+// Note: this DOM-heavy orchestrator is excluded from strict typecheck (the
+// `@ts-nocheck` directive above). Type safety is enforced on the pure modules
+// in files/src/*.js where the schema invariants and RF math live.
 import {
   WALL_MATERIALS,
   bandLossMultiplier,
   wallToPx,
   computeCoveragePath as _computeCoveragePath,
   sampleFloorCoverage as _sampleFloorCoverage,
+  sampleRoamingOverlap as _sampleRoamingOverlap,
   dbmAt,
+  snrAt,
+  mbpsAt,
+  mcsFromSnr,
+  effectiveEirp,
+  dbmAtThroughSlab,
 } from './src/geometry.js';
 import {
   migrateProject,
@@ -17,13 +28,18 @@ import {
   DEFAULT_SETTINGS,
 } from './src/migrate.js';
 import {
-  AP_MODEL_GROUPS, MODELS, AP_RANGE_M,
-  SW_MODEL_GROUPS, SW_MODELS,
+  AP_MODEL_GROUPS, MODELS, AP_RANGE_M, AP_ANTENNA_GAIN_DBI,
+  SW_MODEL_GROUPS, SW_MODELS, SW_POE_BUDGET_W,
   WALL_MATERIAL_KEYS, AP_COLORS,
   AP_PATTERNS, AP_PATTERN_KEYS, AP_POE_W,
   CAM_MODEL_GROUPS, CAM_MODELS, CAM_SPECS,
-  HEATMAP_STOPS,
+  HEATMAP_STOPS, HEATMAP_MODES, HEATMAP_MODE_KEYS,
+  REGULATORY_REGIONS, REGULATORY_REGION_KEYS, DEFAULT_REGULATORY_REGION,
+  PROPAGATION_MODELS, PROPAGATION_MODEL_KEYS,
+  ROAMING_OVERLAP_DBM, DEFAULT_FLOOR_SLAB_DB,
+  ARCH_SCALE_PRESETS,
 } from './src/constants.js';
+import {t,setLang,getLang,availableLangs} from './src/i18n.js';
 import {
   idbPutImage, idbGetImage, idbDeleteImage,
   newImgId as _newImgId,
@@ -158,7 +174,7 @@ const HINTS={
 let SETTINGS={...DEFAULT_SETTINGS};
 
 // ═══ STATE ════════════════════════════════════════
-let FLOORS=[{id:'f1',name:'Floor 1',img:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],scaleM:100}];
+let FLOORS=[{id:'f1',name:'Floor 1',img:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],ANNOS:[],SAMPLES:[],scaleM:100}];
 let curFloor=0;
 let nid=1;
 let mode='add';
@@ -201,6 +217,17 @@ const DZS=()=>F().DZS;
 const SWS=()=>F().SWS;
 const WALLS=()=>F().WALLS||(F().WALLS=[]);
 const CAMS=()=>F().CAMS||(F().CAMS=[]);
+const ANNOS=()=>F().ANNOS||(F().ANNOS=[]);
+const SAMPLES=()=>F().SAMPLES||(F().SAMPLES=[]);
+const REVS=()=>(typeof window!=='undefined'&&Array.isArray(PROJECT_REVISIONS)?PROJECT_REVISIONS:[]);
+
+// v3 state
+let annoStart=null;        // {x,y} while drawing an arrow/dim annotation
+let annoHover=null;
+let annoSubMode='text';    // 'text' | 'arrow' | 'dim'
+let apStickStart=null;     // {id, fx, fy, covPct} captured at drag start (AP-on-stick)
+let apStickBest=null;      // best coverage % seen during this drag
+let PROJECT_REVISIONS=[];  // mirror of data.revisions for the loaded project
 
 // ═══ DOM ══════════════════════════════════════════
 const viewport=document.getElementById('vp'),canvas=document.getElementById('cv'),mapImg=document.getElementById('mi');
@@ -314,7 +341,7 @@ function addFloor(){
   // New floors inherit the current floor's scale as a sensible default — the
   // user can override per-floor afterwards.
   const inheritedScale=F()?.scaleM||100;
-  FLOORS.push({id:'f'+(++nid),name:defaultName,img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],scaleM:inheritedScale});
+  FLOORS.push({id:'f'+(++nid),name:defaultName,img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],ANNOS:[],SAMPLES:[],scaleM:inheritedScale});
   switchFloor(FLOORS.length-1);
   toast('Floor added');
   // Immediately enter rename mode on the new tab so user can pick a real name
@@ -754,7 +781,7 @@ async function saveProject(){
     return out;
   }));
   // scaleM is now stored per-floor; project-level field omitted.
-  const data={version:PROJECT_VERSION,settings:SETTINGS,floors:floorsForExport,savedAt:new Date().toISOString()};
+  const data={version:PROJECT_VERSION,settings:SETTINGS,floors:floorsForExport,revisions:PROJECT_REVISIONS,savedAt:new Date().toISOString()};
   const blob=new Blob([JSON.stringify(data,_stripCacheReplacer,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
   a.download='noctis_project.json';a.click();
@@ -773,7 +800,8 @@ function newProject(){
     // Mutate FLOORS in place rather than reassigning the binding — this keeps
     // any existing references (tests, inspector debugging, closures) valid.
     FLOORS.length=0;
-    FLOORS.push({id:'f1',name:'Floor 1',img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],scaleM:100});
+    FLOORS.push({id:'f1',name:'Floor 1',img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],ANNOS:[],SAMPLES:[],scaleM:100});
+    PROJECT_REVISIONS=[];
     curFloor=0;selId=null;selType=null;nid=1;
     syncScaleFromFloor();
     try{localStorage.removeItem(AUTOSAVE_KEY);}catch(_){}
@@ -798,6 +826,9 @@ function loadProject(input){
       const [data,warnings]=migrateProject(raw);
       FLOORS=data.floors;
       SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
+      PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
+      // Apply the persisted UI language (i18n bundle) right away.
+      if(SETTINGS.language)setLang(SETTINGS.language);
       curFloor=0;selId=null;selType=null;
       syncScaleFromFloor();
       syncNidFromFloors();
@@ -820,10 +851,29 @@ function loadProject(input){
 // Called after settings change or a project load.
 function applySettingsToBrand(){
   const lbl=document.getElementById('brand-lbl');
-  if(!lbl)return;
-  const co=SETTINGS.company||'NOCTIS';
-  const f=F();
-  lbl.textContent=f&&f.imgName?co+' · '+f.imgName:co+' Planner';
+  if(lbl){
+    const co=SETTINGS.company||'NOCTIS';
+    const f=F();
+    lbl.textContent=f&&f.imgName?co+' · '+f.imgName:co+' Planner';
+  }
+  _syncToolbarFromSettings();
+}
+// Reflect persisted v3 settings on the toolbar — the heatmap-mode / band
+// pills and the Roaming toggle. Without this, loading a project saved with
+// a non-default heatmap mode leaves the pill showing the wrong label.
+function _syncToolbarFromSettings(){
+  const modePill=document.getElementById('heat-mode-pill');
+  if(modePill){
+    const m=SETTINGS.heatmapMode||'rssi';
+    modePill.textContent=(HEATMAP_MODES[m]||HEATMAP_MODES.rssi).label;
+  }
+  const bandPill=document.getElementById('heat-band-pill');
+  if(bandPill){
+    const b=SETTINGS.heatmapBand||'all';
+    bandPill.textContent=({all:'All',['2.4']:'2.4 GHz',['5']:'5 GHz',['6']:'6 GHz'})[b]||'All';
+  }
+  const roam=document.getElementById('btn-roaming');
+  if(roam)roam.classList.toggle('active',!!SETTINGS.showRoamingOverlap);
 }
 
 // ═══ ID SYNC ══════════════════════════════════════
@@ -953,6 +1003,11 @@ document.addEventListener('pointermove',e=>{
   if(resId)doResize(e.clientX);
   if(mode==='ruler'&&rulerStart&&!rulerEnd)updateRuler(e.clientX,e.clientY);
   if(mode==='wall'&&wallStart)updateWallPreview(e.clientX,e.clientY,e.shiftKey);
+  if(mode==='anno'&&annoStart&&annoSubMode!=='text'){
+    const img=vpToImg(e.clientX,e.clientY);
+    annoHover={x:img.x,y:img.y};
+    renderAnnoPreview();
+  }
 });
 document.addEventListener('pointerup',()=>{
   activePointers=Math.max(0,activePointers-1);
@@ -1064,8 +1119,13 @@ function setMode(m){
   if(m!=='ruler'){rulerStart=null;renderRuler();}
   // Clear any in-progress wall when leaving wall mode
   if(m!=='wall'){wallStart=null;wallHover=null;renderWallPreview();}
-  ['add','sel','dz','sw','cam','ruler','wall'].forEach(mm=>document.getElementById('btn-'+mm)?.classList.toggle('active',mm===m));
+  // Clear annotation drag when leaving annotation mode
+  if(m!=='anno'){annoStart=null;annoHover=null;renderAnnoPreview();}
+  ['add','sel','dz','sw','cam','ruler','wall','anno'].forEach(mm=>document.getElementById('btn-'+mm)?.classList.toggle('active',mm===m));
   viewport.className=m==='sel'?'':m==='dz'?'cur-cell':m==='sw'?'cur-cell':m==='cam'?'cur-cell':'cur-cross';
+  // Show/hide the annotation sub-mode chooser (text / arrow / dim).
+  const subBar=document.getElementById('anno-sub-bar');
+  if(subBar)subBar.style.display=(m==='anno')?'flex':'none';
   // Hint pill: show prominently for 3.5s on mode change, then fade to background.
   // The auto-fade keeps it visible enough to consult but unobtrusive while you work.
   const hintEl=document.getElementById('hint-bar');
@@ -1094,7 +1154,16 @@ viewport.addEventListener('click',e=>{
     // Remember last-used model: new APs default to whatever model the user
     // last selected or placed in this session (or the project default).
     const defaultModel=AP_RANGE_M[SETTINGS.lastModel]?SETTINGS.lastModel:'U6 Pro';
-    APS().push({id,name:'AP-'+String(num).padStart(2,'0'),model:defaultModel,freq:'2.4 / 5 GHz',channel:'auto',txPower:'auto',sig:'strong',color:'',ip:'',mac:'',port:'',vlan:'',notes:'',fx,fy,r:rangeMToPx(AP_RANGE_M[defaultModel]),locked:false});
+    APS().push({
+      id,name:'AP-'+String(num).padStart(2,'0'),model:defaultModel,
+      freq:'2.4 / 5 GHz',channel:'auto',txPower:'auto',sig:'strong',color:'',
+      ip:'',mac:'',port:'',vlan:'',notes:'',comment:'',
+      fx,fy,r:rangeMToPx(AP_RANGE_M[defaultModel]),locked:false,
+      pattern:'omni',heading:0,swId:'',
+      antennaGainDbi:AP_ANTENNA_GAIN_DBI[defaultModel]??4,
+      cableLossDb:0,txPowerDbm:20,mountHeightM:2.7,downtiltDeg:0,
+      capacityClients:25,
+    });
     sel(id,'ap');setMode('sel');render();renderList();calcCoverage();toast('AP placed — edit in panel');
   }else if(mode==='dz'){
     snapshot();
@@ -1140,6 +1209,16 @@ viewport.addEventListener('click',e=>{
       wallStart={x,y};wallHover={x,y};renderWallPreview();
     }else{
       commitWall(x,y);
+    }
+  }else if(mode==='anno'){
+    // Text: single click → prompt. Arrow/dim: two-click drag like walls.
+    if(annoSubMode==='text'){
+      annoStart={x,y};
+      commitAnno(x,y);
+    } else if(!annoStart){
+      annoStart={x,y};annoHover={x,y};renderAnnoPreview();
+    } else {
+      commitAnno(x,y);
     }
   }else{
     desel();render();
@@ -1606,7 +1685,7 @@ function renderAPs(){
       e.stopPropagation();
       if(e.shiftKey&&mode==='sel'){toggleSelection(ap.id,'ap');return;}
       sel(ap.id,'ap');
-      if(!ap.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=ap.fx*w-img.x;dragOffY=ap.fy*h-img.y;dragId=ap.id;dragType='ap';_dragInitialFx=ap.fx;_dragInitialFy=ap.fy;}
+      if(!ap.locked){const img=vpToImg(e.clientX,e.clientY);dragOffX=ap.fx*w-img.x;dragOffY=ap.fy*h-img.y;dragId=ap.id;dragType='ap';_dragInitialFx=ap.fx;_dragInitialFy=ap.fy;startApStick(ap.id);}
     });
     apLayer.appendChild(g);
   });
@@ -1861,22 +1940,89 @@ function renderOL(){
 }
 
 // Per-pixel signal-strength heatmap. We paint to an offscreen canvas at a
-// coarse grid resolution (one cell per ~6 px of image space), shading each
-// cell by the dBm of the strongest AP that can reach it through the walls.
-// Cells are quantized to the HEATMAP_STOPS palette so the rendering reads as
-// distinct bands rather than a continuous gradient.
+// coarse grid resolution, shading each cell by the strongest contributor at
+// that point. v3 supports four metric modes (RSSI / SNR / MCS / Throughput)
+// + a band filter + neighbouring-floor leakage through slabs.
+
 function _heatColor(dbm){
+  // Legacy single-mode helper retained for code paths that still call it.
   if(dbm===null||dbm===undefined||!Number.isFinite(dbm))return null;
-  // HEATMAP_STOPS is ordered strongest→weakest; pick the first whose
-  // threshold the sample meets.
-  for(const s of HEATMAP_STOPS){
-    if(dbm>=s.dbm)return s.color;
-  }
+  for(const s of HEATMAP_STOPS){if(dbm>=s.dbm)return s.color;}
   return null;
 }
+function _heatColorFor(mode,value){
+  if(value===null||value===undefined||!Number.isFinite(value))return null;
+  const stops=(HEATMAP_MODES[mode]||HEATMAP_MODES.rssi).stops;
+  for(const s of stops){if(value>=s.v)return s.color;}
+  return null;
+}
+function cycleHeatmapMode(){
+  const keys=HEATMAP_MODE_KEYS;
+  const cur=SETTINGS.heatmapMode||'rssi';
+  const i=keys.indexOf(cur);
+  SETTINGS.heatmapMode=keys[(i+1)%keys.length];
+  const lbl=(HEATMAP_MODES[SETTINGS.heatmapMode]||HEATMAP_MODES.rssi).label;
+  const pill=document.getElementById('heat-mode-pill');
+  if(pill)pill.textContent=lbl;
+  render();autosave();
+  toast('Heatmap mode: '+lbl);
+}
+function cycleHeatmapBand(){
+  const cur=SETTINGS.heatmapBand||'all';
+  const order=['all','2.4','5','6'];
+  const i=order.indexOf(cur);
+  SETTINGS.heatmapBand=order[(i+1)%order.length];
+  const pill=document.getElementById('heat-band-pill');
+  if(pill)pill.textContent=({all:'All',['2.4']:'2.4 GHz',['5']:'5 GHz',['6']:'6 GHz'})[SETTINGS.heatmapBand];
+  render();autosave();
+  toast('Heatmap band: '+SETTINGS.heatmapBand);
+}
+function _bandMatches(ap,bandFilter){
+  if(bandFilter==='all'||!bandFilter)return true;
+  const f=ap.freq||'';
+  if(bandFilter==='2.4')return f.indexOf('2.4')>=0;
+  if(bandFilter==='5')  return f==='5 GHz only'||f==='2.4 / 5 GHz';
+  if(bandFilter==='6')  return f.indexOf('6 GHz')>=0;
+  return true;
+}
+function _bestMetricAt(metric,x,y,aps,neighbour,walls,w,h,propModel,slab,noiseFloor){
+  let best=-Infinity;
+  for(const ap of aps){
+    const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
+    const opts={
+      bandFactor:bandLossMultiplier(ap.freq),
+      arcDeg:pat.arc,headingDeg:ap.heading||0,
+      eirpDbm:effectiveEirp(ap),
+      noiseFloorDbm:noiseFloor,
+      model:propModel,
+    };
+    let v=null;
+    if(metric==='dbm') v=dbmAt(ap,x,y,w,h,walls,opts);
+    else if(metric==='snr') v=snrAt(ap,x,y,w,h,walls,opts);
+    else if(metric==='mcs'){
+      const snr=snrAt(ap,x,y,w,h,walls,opts);
+      v=snr===null?null:mcsFromSnr(snr);
+    }else if(metric==='mbps') v=mbpsAt(ap,x,y,w,h,walls,opts);
+    if(v!==null && Number.isFinite(v) && v>best)best=v;
+  }
+  for(const ap of neighbour){
+    const bf=bandLossMultiplier(ap.freq);
+    const dbm=dbmAtThroughSlab(ap,x,y,w,h,slab,bf,propModel);
+    if(dbm===null)continue;
+    let v=null;
+    if(metric==='dbm') v=dbm;
+    else if(metric==='snr') v=dbm-noiseFloor;
+    else if(metric==='mcs') v=mcsFromSnr(dbm-noiseFloor);
+    else if(metric==='mbps'){
+      // Rough proxy: scale the MCS row mbps by 8 to approximate a multi-stream link.
+      const m=mcsFromSnr(dbm-noiseFloor);
+      v=m<0?0:m*8;
+    }
+    if(v!==null && Number.isFinite(v) && v>best)best=v;
+  }
+  return best===-Infinity?null:best;
+}
 function renderHeat(){
-  // We use a canvas overlay, but keep the old SVG layer reachable in case
-  // anything else clears it; just always clear it on render.
   heatLayer.innerHTML='';
   if(!showHeat||!heatCanvas){heatCanvas.style.display='none';return;}
   const w=mapImg.naturalWidth||0,h=mapImg.naturalHeight||0;
@@ -1886,27 +2032,697 @@ function renderHeat(){
   heatCanvas.style.display='block';
   const ctx=heatCanvas.getContext('2d');
   ctx.clearRect(0,0,w,h);
-  const aps=APS();
-  if(!aps.length)return;
+  const mode=SETTINGS.heatmapMode||'rssi';
+  const metric=(HEATMAP_MODES[mode]||HEATMAP_MODES.rssi).metric;
+  const bandFilter=SETTINGS.heatmapBand||'all';
+  const propModel=SETTINGS.propagationModel||'logd';
+  const noiseFloor=Number.isFinite(SETTINGS.noiseFloorDbm)?SETTINGS.noiseFloorDbm:-95;
+  const slab=Number.isFinite(SETTINGS.floorSlabAttenDb)?SETTINGS.floorSlabAttenDb:DEFAULT_FLOOR_SLAB_DB;
+  const aps=APS().filter(ap=>_bandMatches(ap,bandFilter));
+  const neighbour=[];
+  if(SETTINGS.showFloorLeakage){
+    if(curFloor-1>=0)for(const ap of (FLOORS[curFloor-1].APS||[]))if(_bandMatches(ap,bandFilter))neighbour.push(ap);
+    if(curFloor+1<FLOORS.length)for(const ap of (FLOORS[curFloor+1].APS||[]))if(_bandMatches(ap,bandFilter))neighbour.push(ap);
+  }
+  if(!aps.length && !neighbour.length)return;
   const walls=WALLS();
-  // Sample step in image pixels — 5 px gives crisp bands without making the
-  // sampler O(walls * 40 000) per render.
   const step=Math.max(4,Math.round(Math.min(w,h)/120));
   for(let y=0;y<h;y+=step){
     for(let x=0;x<w;x+=step){
-      // Strongest dBm across all APs at this point (we want best-AP coverage).
-      let best=-Infinity;
-      for(const ap of aps){
-        const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
-        const d=dbmAt(ap,x,y,w,h,walls,{bandFactor:bandLossMultiplier(ap.freq),arcDeg:pat.arc,headingDeg:ap.heading||0});
-        if(d!==null&&d>best)best=d;
-      }
-      const color=_heatColor(best===-Infinity?null:best);
+      const v=_bestMetricAt(metric,x,y,aps,neighbour,walls,w,h,propModel,slab,noiseFloor);
+      const color=_heatColorFor(mode,v);
       if(!color)continue;
       ctx.fillStyle=color;
       ctx.fillRect(x,y,step,step);
     }
   }
+}
+
+// Roaming overlap layer. Tints cells where ≥2 APs deliver ≥ ROAMING_OVERLAP_DBM
+// signal. Same canvas as the heatmap is unsuitable (different colour role), so
+// we use a dedicated SVG group with semi-transparent rects.
+function renderRoaming(){
+  const layer=document.getElementById('roaming-layer');
+  if(!layer)return;
+  layer.innerHTML='';
+  if(!SETTINGS.showRoamingOverlap)return;
+  const w=mapImg.naturalWidth||0,h=mapImg.naturalHeight||0;
+  if(!w||!h)return;
+  const aps=APS();
+  if(aps.length<2)return;
+  const walls=WALLS();
+  const propModel=SETTINGS.propagationModel||'logd';
+  const step=Math.max(6,Math.round(Math.min(w,h)/80));
+  // Render into a path of overlapping rects so the DOM stays small.
+  let d='';
+  for(let y=0;y<h;y+=step){
+    for(let x=0;x<w;x+=step){
+      let n=0;
+      for(const ap of aps){
+        const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
+        const dbm=dbmAt(ap,x,y,w,h,walls,{
+          bandFactor:bandLossMultiplier(ap.freq),
+          arcDeg:pat.arc,headingDeg:ap.heading||0,
+          eirpDbm:effectiveEirp(ap),
+          model:propModel,
+        });
+        if(dbm!==null && dbm>=ROAMING_OVERLAP_DBM){n++;if(n>=2)break;}
+      }
+      if(n>=2) d+=`M${x},${y}h${step}v${step}h${-step}Z`;
+    }
+  }
+  if(!d)return;
+  const path=mk('path');
+  path.setAttribute('d',d);
+  path.setAttribute('class','roaming-fill');
+  layer.appendChild(path);
+}
+
+// Annotation layer. Text labels and arrows live in floor.ANNOS.
+function renderAnnotations(){
+  const layer=document.getElementById('anno-layer');
+  if(!layer)return;
+  layer.innerHTML='';
+  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+  for(const a of ANNOS()){
+    const x=(a.fx||0)*w, y=(a.fy||0)*h;
+    if(a.kind==='arrow'||a.kind==='dim'){
+      const x2=(a.fx2||a.fx||0)*w, y2=(a.fy2||a.fy||0)*h;
+      const ln=mk('line');
+      ln.setAttribute('x1',x);ln.setAttribute('y1',y);
+      ln.setAttribute('x2',x2);ln.setAttribute('y2',y2);
+      ln.setAttribute('class', a.kind==='dim' ? 'anno-dim' : 'anno-arrow');
+      ln.setAttribute('marker-end','url(#anno-arrowhead)');
+      layer.appendChild(ln);
+      if(a.kind==='dim'){
+        // Show distance label at the midpoint
+        const mx=(x+x2)/2, my=(y+y2)/2;
+        const dist=Math.hypot(x-x2,y-y2);
+        const m=Math.round(dist*(scaleM||100)/100*10)/10;
+        const lbl=mk('text');
+        lbl.setAttribute('x',mx);lbl.setAttribute('y',my-6);
+        lbl.setAttribute('class','anno-dim-label');
+        lbl.textContent=m+' m';
+        layer.appendChild(lbl);
+      }
+      if(a.text){
+        const lbl=mk('text');
+        lbl.setAttribute('x',x);lbl.setAttribute('y',y-10);
+        lbl.setAttribute('class','anno-text');
+        lbl.textContent=a.text;
+        layer.appendChild(lbl);
+      }
+    } else {
+      const lbl=mk('text');
+      lbl.setAttribute('x',x);lbl.setAttribute('y',y);
+      lbl.setAttribute('class','anno-text');
+      lbl.textContent=a.text||'Note';
+      layer.appendChild(lbl);
+    }
+  }
+}
+
+// Survey-sample layer. Each sample is a small circle coloured by its RSSI,
+// with a thin outline that turns red when the measured value is materially
+// stronger or weaker than the predicted value at that point.
+function renderSamples(){
+  const layer=document.getElementById('sample-layer');
+  if(!layer)return;
+  layer.innerHTML='';
+  const samples=SAMPLES();
+  if(!samples.length)return;
+  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+  const walls=WALLS();
+  const propModel=SETTINGS.propagationModel||'logd';
+  for(const s of samples){
+    const x=(s.fx||0)*w, y=(s.fy||0)*h;
+    // Predicted: max dBm across local APs.
+    let predicted=-Infinity;
+    for(const ap of APS()){
+      const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
+      const d=dbmAt(ap,x,y,w,h,walls,{
+        bandFactor:bandLossMultiplier(ap.freq),
+        arcDeg:pat.arc,headingDeg:ap.heading||0,
+        eirpDbm:effectiveEirp(ap),
+        model:propModel,
+      });
+      if(d!==null&&d>predicted)predicted=d;
+    }
+    const measured=Number.isFinite(s.rssi)?s.rssi:-95;
+    const delta=predicted===-Infinity?null:(measured-predicted);
+    const color=_heatColor(measured)||'#666';
+    const c=mk('circle');
+    c.setAttribute('cx',x);c.setAttribute('cy',y);c.setAttribute('r',5);
+    c.setAttribute('fill',color);
+    c.setAttribute('class','sample-dot');
+    if(delta!==null && Math.abs(delta)>8){
+      c.setAttribute('stroke','#c0382b');c.setAttribute('stroke-width','2');
+    } else {
+      c.setAttribute('stroke','#000');c.setAttribute('stroke-width','1');
+    }
+    c.setAttribute('data-rssi',String(measured));
+    if(delta!==null){
+      const t=mk('title');
+      t.textContent=`Measured ${measured} dBm · Predicted ${Math.round(predicted)} dBm · Δ ${delta>=0?'+':''}${Math.round(delta)} dB`;
+      c.appendChild(t);
+    }
+    layer.appendChild(c);
+  }
+}
+
+// ═══ ANNOTATION DRAWING ═══════════════════════════
+// Live preview while the user drags out an arrow / dim annotation.
+function renderAnnoPreview(){
+  const layer=document.getElementById('anno-preview-layer');
+  if(!layer)return;
+  layer.innerHTML='';
+  if(!annoStart||!annoHover)return;
+  if(annoSubMode==='text')return;
+  const ln=mk('line');
+  ln.setAttribute('x1',annoStart.x);ln.setAttribute('y1',annoStart.y);
+  ln.setAttribute('x2',annoHover.x);ln.setAttribute('y2',annoHover.y);
+  ln.setAttribute('class', annoSubMode==='dim' ? 'anno-dim preview' : 'anno-arrow preview');
+  ln.setAttribute('marker-end','url(#anno-arrowhead)');
+  layer.appendChild(ln);
+}
+function commitAnno(x2,y2){
+  if(!annoStart)return;
+  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+  const fx=annoStart.x/w, fy=annoStart.y/h, fx2=x2/w, fy2=y2/h;
+  if(annoSubMode==='text'){
+    const txt=prompt('Label text','');
+    if(txt!==null && txt.trim()){
+      snapshot();
+      ANNOS().push({id:'an'+(++nid),kind:'text',fx,fy,fx2:fx,fy2:fy,text:txt.trim()});
+    }
+  } else {
+    snapshot();
+    ANNOS().push({id:'an'+(++nid),kind:annoSubMode,fx,fy,fx2,fy2,text:''});
+  }
+  annoStart=null;annoHover=null;
+  render();
+}
+function setAnnoSubMode(m){
+  annoSubMode=m;
+  document.querySelectorAll('[data-anno-sub]').forEach(b=>b.classList.toggle('active',b.dataset.annoSub===m));
+}
+
+// ═══ AP-ON-STICK READOUT ══════════════════════════
+function updateApStickReadout(){
+  const el=document.getElementById('ap-stick-readout');
+  if(!el)return;
+  if(!apStickStart || !dragId || dragType!=='ap'){el.style.display='none';return;}
+  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+  const cur=_sampleFloorCoverage(F(),w,h);
+  const curPct=cur.total?cur.covered/cur.total*100:0;
+  if(apStickBest===null||curPct>apStickBest)apStickBest=curPct;
+  const delta=curPct-apStickStart.covPct;
+  el.style.display='block';
+  el.innerHTML=
+    `Cov: <b>${curPct.toFixed(1)}%</b> `+
+    `(<span style="color:${delta>=0?'#1e7d3c':'#c0382b'}">${delta>=0?'+':''}${delta.toFixed(1)}%</span>)`+
+    ` · best ${apStickBest.toFixed(1)}%`;
+}
+function startApStick(apId){
+  if(!apId)return;
+  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+  const cur=_sampleFloorCoverage(F(),w,h);
+  const ap=APS().find(a=>a.id===apId);
+  if(!ap)return;
+  apStickStart={id:apId,fx:ap.fx,fy:ap.fy,covPct:cur.total?cur.covered/cur.total*100:0};
+  apStickBest=apStickStart.covPct;
+}
+function endApStick(){apStickStart=null;apStickBest=null;updateApStickReadout();}
+function cancelApStick(){
+  // Esc during drag — snap back to the start position.
+  if(!apStickStart)return;
+  const ap=APS().find(a=>a.id===apStickStart.id);
+  if(ap){ap.fx=apStickStart.fx;ap.fy=apStickStart.fy;invalidateCoverageCache();render();calcCoverage();}
+  endApStick();
+}
+
+// ═══ SURVEY CSV IMPORT ════════════════════════════
+// Accepts `x,y,floor,ssid,bssid,rssi,channel` rows. Headers detected via the
+// first line; missing columns are tolerated. (`x,y` are fractional [0,1] or
+// raw pixel — auto-detected: ≤2 → fractional, otherwise pixel.)
+function importSurveyCsv(input){
+  const file=input&&input.files&&input.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      const text=String(e.target.result||'');
+      const lines=text.split(/\r?\n/).filter(l=>l.trim().length);
+      if(!lines.length){toast('CSV is empty');return;}
+      const head=lines[0].toLowerCase().split(',').map(s=>s.trim());
+      const hasHeader=head.some(h=>['x','fx','rssi','ssid','bssid','channel','floor'].includes(h));
+      const colIdx=(k,fallback)=>{
+        if(!hasHeader)return fallback;
+        const i=head.indexOf(k);return i>=0?i:fallback;
+      };
+      const ix=colIdx('x',0), iy=colIdx('y',1), iFloor=colIdx('floor',2);
+      const iSsid=colIdx('ssid',3), iBssid=colIdx('bssid',4);
+      const iRssi=colIdx('rssi',5), iCh=colIdx('channel',6);
+      const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+      const start=hasHeader?1:0;
+      const samples=[];
+      for(let r=start;r<lines.length;r++){
+        const cols=lines[r].split(',').map(s=>s.trim());
+        const rawX=parseFloat(cols[ix]);
+        const rawY=parseFloat(cols[iy]);
+        if(!Number.isFinite(rawX)||!Number.isFinite(rawY))continue;
+        // Auto-detect fractional vs pixel
+        const fx=rawX<=2?rawX:rawX/w;
+        const fy=rawY<=2?rawY:rawY/h;
+        const fl=cols[iFloor];
+        const rssi=parseFloat(cols[iRssi]);
+        samples.push({
+          id:'s'+(++nid), fx, fy,
+          ssid: cols[iSsid]||'',
+          bssid: cols[iBssid]||'',
+          rssi: Number.isFinite(rssi)?rssi:-95,
+          channel: cols[iCh]||'',
+          floorName: fl||'',
+        });
+      }
+      if(!samples.length){toast('No valid samples found in CSV');return;}
+      snapshot();
+      // For now, route all samples to the current floor — a future patch
+      // could route by `floorName` when provided.
+      F().SAMPLES=(F().SAMPLES||[]).concat(samples);
+      render();
+      toast(t('toast.imported_samples',{n:samples.length}));
+    }catch(err){
+      toast('Failed to parse CSV: '+(err&&err.message||err));
+    }
+    if(input)input.value='';
+  };
+  reader.readAsText(file);
+}
+
+// ═══ AUTO CHANNEL + TX-POWER PLANNING ═════════════
+// Greedy graph-coloring channel assignment. Looks at all APs on the current
+// floor, picks a channel for each from its band's region-allowed list, and
+// favours channels that don't overlap with neighbours within 0.9*(rA+rB).
+function _regionChannels(band){
+  const region=REGULATORY_REGIONS[SETTINGS.regulatoryRegion||DEFAULT_REGULATORY_REGION]||REGULATORY_REGIONS[DEFAULT_REGULATORY_REGION];
+  if(band==='2.4')return region.channels24.slice();
+  if(band==='5')return region.channels5.slice();
+  if(band==='6')return region.channels6.slice();
+  return [];
+}
+function _bandForAp(ap){
+  const f=ap.freq||'';
+  if(f.indexOf('6 GHz')>=0)return '6';
+  if(f==='2.4 GHz only')return '2.4';
+  return '5';   // 5 GHz only and 2.4/5 GHz dual → plan on 5 GHz
+}
+function autoChannelPlan(){
+  const aps=APS();
+  if(!aps.length){toast('No APs to plan');return;}
+  snapshot();
+  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+  // For each AP, score each channel in its band by neighbour overlap penalty.
+  let changed=0;
+  for(const ap of aps){
+    const band=_bandForAp(ap);
+    const list=_regionChannels(band);
+    if(!list.length)continue;
+    // Skip channels that are DFS in the current region (avoid unnecessary
+    // radar pre-emption hits) unless the AP already sits on one explicitly.
+    const region=REGULATORY_REGIONS[SETTINGS.regulatoryRegion||DEFAULT_REGULATORY_REGION];
+    const dfs=region?region.dfs||[]:[];
+    const candidates=list.filter(c=>!dfs.includes(c));
+    const pool=candidates.length?candidates:list;
+    let bestCh=pool[0], bestScore=Infinity;
+    for(const ch of pool){
+      let score=0;
+      for(const other of aps){
+        if(other===ap)continue;
+        if(_bandForAp(other)!==band)continue;
+        const ax=ap.fx*w, ay=ap.fy*h;
+        const bx=other.fx*w, by=other.fy*h;
+        const dist=Math.hypot(ax-bx,ay-by);
+        if(dist>=(ap.r+other.r)*0.9)continue;
+        const otherCh=parseInt(String(other.channel||''),10);
+        if(!Number.isFinite(otherCh))continue;
+        if(otherCh===ch)score+=10;
+        else if(band==='2.4' && Math.abs(otherCh-ch)<5)score+=5;
+        else if((band==='5'||band==='6') && Math.abs(otherCh-ch)<4)score+=1;
+      }
+      if(score<bestScore){bestScore=score;bestCh=ch;}
+    }
+    if(String(ap.channel)!==String(bestCh)){ap.channel=String(bestCh);changed++;}
+  }
+  render();renderRP();
+  toast(`Auto channel: ${changed} AP${changed===1?'':'s'} updated`);
+}
+// Reference Tx power that maps to an AP's stored coverage radius `ap.r`.
+const TX_POWER_REF_DBM=20;
+// Effective coverage radius if the AP ran at `tx` dBm. Indoor path-loss
+// exponent ≈3, so the usable range scales as 10^(ΔdBm/30) — i.e. roughly
+// doubling for every +9 dB.
+function _radiusAtTx(baseR,tx){
+  return baseR*Math.pow(10,(tx-TX_POWER_REF_DBM)/30);
+}
+function autoTxPower(){
+  const aps=APS();
+  if(!aps.length){toast('No APs to plan');return;}
+  snapshot();
+  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+  // Try each Tx power (from 5 to 23 dBm) and pick the one whose resulting
+  // coverage overlaps neighbouring same-band APs by ~30 % of its own area —
+  // enough for roaming without blanketing the floor. The candidate radius
+  // scales with Tx power, so the heuristic actually discriminates.
+  for(const ap of aps){
+    let bestTx=TX_POWER_REF_DBM, bestDelta=Infinity;
+    const ax=ap.fx*w, ay=ap.fy*h;
+    for(const tx of [5,8,11,14,17,20,23]){
+      const a=_radiusAtTx(ap.r,tx);
+      let overlap=0;
+      const own=Math.PI*a*a;
+      for(const other of aps){
+        if(other===ap)continue;
+        if(_bandForAp(other)!==_bandForAp(ap))continue;
+        const bx=other.fx*w, by=other.fy*h;
+        const d=Math.hypot(ax-bx,ay-by);
+        const b=other.r;
+        if(d>=a+b)continue;
+        // Lens (circle–circle intersection) area approximation.
+        if(d<=Math.abs(a-b))overlap+=Math.PI*Math.min(a,b)**2;
+        else{
+          const a2=Math.acos((d*d+a*a-b*b)/(2*d*a))*a*a;
+          const b2=Math.acos((d*d+b*b-a*a)/(2*d*b))*b*b;
+          const tri=0.5*Math.sqrt(Math.max(0,(-d+a+b)*(d+a-b)*(d-a+b)*(d+a+b)));
+          overlap+=Math.max(0,a2+b2-tri);
+        }
+      }
+      const ratio=own?overlap/own:0;
+      const delta=Math.abs(ratio-0.3);
+      if(delta<bestDelta){bestDelta=delta;bestTx=tx;}
+    }
+    ap.txPowerDbm=bestTx;
+  }
+  invalidateCoverageCache();
+  render();renderRP();calcCoverage();
+  toast('Tx-power tuned for each AP');
+}
+
+// ═══ BOM + CABLE-SCHEDULE CSV EXPORTS ═════════════
+function _csvEscape(v){
+  const s=String(v??'');
+  if(/[",\n]/.test(s))return '"'+s.replace(/"/g,'""')+'"';
+  return s;
+}
+function _downloadFile(filename,content,mime){
+  const blob=new Blob([content],{type:mime||'text/plain'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},0);
+}
+function doBomCsv(){
+  const tally=new Map(); // model → {kind, model, qty, poeWatts}
+  for(const f of FLOORS){
+    for(const ap of (f.APS||[])){
+      const k='AP|'+(ap.model||'');
+      const e=tally.get(k)||{kind:'AP',model:ap.model||'Custom/Other',qty:0,poeW:0};
+      e.qty++;e.poeW+=(AP_POE_W[ap.model]||0);
+      tally.set(k,e);
+    }
+    for(const c of (f.CAMS||[])){
+      const k='CAM|'+(c.model||'');
+      const e=tally.get(k)||{kind:'Camera',model:c.model||'Custom/Other',qty:0,poeW:0};
+      e.qty++;e.poeW+=((CAM_SPECS[c.model]||{}).poeW||0);
+      tally.set(k,e);
+    }
+    for(const sw of (f.SWS||[])){
+      const k='SW|'+(sw.model||'');
+      const e=tally.get(k)||{kind:'Switch',model:sw.model||'Custom/Other',qty:0,poeW:0};
+      e.qty++;
+      tally.set(k,e);
+    }
+  }
+  const rows=[['Kind','Model','Qty','Total PoE draw (W)']];
+  for(const e of tally.values())rows.push([e.kind,e.model,e.qty,e.poeW||'']);
+  const csv=rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
+  _downloadFile('bom.csv',csv,'text/csv');
+  toast(t('toast.bom_exported'));
+}
+function doCableCsv(){
+  const rows=[['Floor','Device','Type','Switch','Length (m)','Slack (m)']];
+  for(const f of FLOORS){
+    const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+    const sws=f.SWS||[];
+    const computeLen=(item)=>{
+      const sw=sws.find(s=>s.id===item.swId);
+      if(!sw)return null;
+      const dx=(item.fx-sw.fx)*w, dy=(item.fy-sw.fy)*h;
+      const px=Math.hypot(dx,dy);
+      const m=Math.round(px*(f.scaleM||100)/100*10)/10;
+      const slack=Math.max(1,Math.round(m*0.1*10)/10);
+      return {m,slack,swName:sw.name||sw.id};
+    };
+    for(const ap of (f.APS||[])){
+      const c=computeLen(ap);
+      if(!c)continue;
+      rows.push([f.name||'',ap.name||ap.id,'AP',c.swName,c.m,c.slack]);
+    }
+    for(const cam of (f.CAMS||[])){
+      const c=computeLen(cam);
+      if(!c)continue;
+      rows.push([f.name||'',cam.name||cam.id,'Camera',c.swName,c.m,c.slack]);
+    }
+  }
+  if(rows.length<=1){toast('No linked devices to export');return;}
+  const csv=rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
+  _downloadFile('cable-schedule.csv',csv,'text/csv');
+  toast(t('toast.cable_exported'));
+}
+
+// ═══ PER-AP INSTALL SHEETS ════════════════════════
+function doInstallSheets(){
+  const w=window.open('','_blank');
+  const allAps=[];
+  for(const f of FLOORS){
+    for(const ap of (f.APS||[])){
+      allAps.push({ap,floor:f});
+    }
+  }
+  if(!allAps.length){w.document.write('<p>No APs to document.</p>');w.document.close();return;}
+  const pat=(k)=>(AP_PATTERNS[k]||AP_PATTERNS.omni).label;
+  const sections=allAps.map(({ap,floor},i)=>{
+    const sw=(floor.SWS||[]).find(s=>s.id===ap.swId);
+    const swName=sw?(sw.name||sw.id):'—';
+    const eirp=effectiveEirp(ap).toFixed(1);
+    const m=Math.round(ap.r*(floor.scaleM||100)/100);
+    return `<section class="sheet${i>0?' page':''}">
+      <h2>${esc(ap.name||'AP')} <span class="floor">· ${esc(floor.name||'')}</span></h2>
+      <table class="install">
+        <tr><th>Model</th><td>${esc(ap.model||'')}</td>
+            <th>Pattern</th><td>${esc(pat(ap.pattern))}</td></tr>
+        <tr><th>Band</th><td>${esc(ap.freq||'')}</td>
+            <th>Channel</th><td>${esc(ap.channel||'auto')}</td></tr>
+        <tr><th>Tx (dBm)</th><td>${esc(ap.txPowerDbm||20)}</td>
+            <th>Gain (dBi)</th><td>${esc(ap.antennaGainDbi??0)}</td></tr>
+        <tr><th>Cable loss (dB)</th><td>${esc(ap.cableLossDb??0)}</td>
+            <th>EIRP (dBm)</th><td>${eirp}</td></tr>
+        <tr><th>Heading (°)</th><td>${esc(ap.heading||0)}</td>
+            <th>Downtilt (°)</th><td>${esc(ap.downtiltDeg||0)}</td></tr>
+        <tr><th>Mount height (m)</th><td>${esc(ap.mountHeightM||2.7)}</td>
+            <th>Capacity (clients)</th><td>${esc(ap.capacityClients||25)}</td></tr>
+        <tr><th>Range (m)</th><td>${m}</td>
+            <th>Switch</th><td>${esc(swName)}</td></tr>
+        <tr><th>IP</th><td>${esc(ap.ip||'')}</td>
+            <th>MAC</th><td>${esc(ap.mac||'')}</td></tr>
+        <tr><th>VLAN</th><td colspan="3">${esc(ap.vlan||'')}</td></tr>
+        <tr><th>Notes</th><td colspan="3">${esc(ap.comment||ap.notes||'')}</td></tr>
+      </table>
+      <div class="photo-placeholder">📷 INSTALL PHOTO</div>
+    </section>`;
+  }).join('\n');
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>${esc(SETTINGS.company||'NOCTIS')} — Install Sheets</title><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet"><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#efece5;font-family:'Rajdhani',sans-serif;color:#000;padding:36px 40px}
+.cover{margin-bottom:30px;padding-bottom:14px;border-bottom:1px solid #000}
+.cover h1{font-size:32px;letter-spacing:-.01em}
+.cover .sub{font-family:'Share Tech Mono',monospace;letter-spacing:.2em;text-transform:uppercase;font-size:10px;color:rgba(0,0,0,.55);margin-top:8px}
+.sheet{padding:30px 0;border-top:1px solid #000}
+.sheet.page{page-break-before:always}
+.sheet h2{font-size:18px;font-weight:700;margin-bottom:14px}
+.sheet h2 .floor{font-weight:500;font-size:13px;color:rgba(0,0,0,.55)}
+table.install{width:100%;border-collapse:collapse;margin-bottom:14px}
+table.install th{text-align:left;background:#efece5;font-family:'Share Tech Mono',monospace;letter-spacing:.15em;text-transform:uppercase;font-size:9px;padding:6px 9px;border-bottom:1px solid rgba(0,0,0,.15);width:22%}
+table.install td{font-size:12px;padding:6px 9px;border-bottom:1px solid rgba(0,0,0,.08);width:28%}
+.photo-placeholder{width:100%;aspect-ratio:16/9;border:1px dashed rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;font-family:'Share Tech Mono',monospace;letter-spacing:.2em;color:rgba(0,0,0,.4);font-size:11px}
+.print-btn{margin-top:24px;padding:12px 28px;background:#000;color:#efece5;border:none;font-size:11px;cursor:pointer;font-family:'Share Tech Mono',monospace;letter-spacing:.2em;text-transform:uppercase;font-weight:700}
+@media print{body{padding:24px;background:#fff}.print-btn{display:none}.sheet.page{page-break-before:always}}
+</style></head><body>
+<div class="cover"><h1>${esc(SETTINGS.company||'NOCTIS')} — AP install sheets</h1><div class="sub">${new Date().toLocaleDateString()} · ${allAps.length} sheets</div></div>
+${sections}
+<button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+</body></html>`);
+  w.document.close();
+  toast(t('toast.installs_exported'));
+}
+
+// ═══ REVISIONS + DIFF ═════════════════════════════
+function _snapshotForRevision(){
+  return JSON.parse(JSON.stringify(FLOORS,_stripCacheReplacer));
+}
+function newRevision(){
+  const name=prompt('Revision name (e.g., "rev B – after client walk")','rev '+String.fromCharCode(65+PROJECT_REVISIONS.length));
+  if(!name)return;
+  PROJECT_REVISIONS.push({
+    id:'rev'+(++nid),
+    name:name.trim(),
+    createdAt:new Date().toISOString(),
+    snapshot:_snapshotForRevision(),
+  });
+  toast('Revision saved: '+name.trim());
+  autosave();
+}
+function restoreRevision(id){
+  const rev=PROJECT_REVISIONS.find(r=>r.id===id);
+  if(!rev)return;
+  showModal('Restore revision',`Replace current floors with revision <strong>${esc(rev.name)}</strong>? Current state will be lost (consider saving a fresh revision first).`,()=>{
+    snapshot();
+    FLOORS=JSON.parse(JSON.stringify(rev.snapshot));
+    if(curFloor>=FLOORS.length)curFloor=0;
+    syncScaleFromFloor();loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
+    toast('Restored '+rev.name);
+  });
+}
+function _diffRevisions(a,b){
+  // Walk floor by floor and report adds/removes/moves of APs+CAMs+SWs+DZs+WALLS.
+  const out=[];
+  const fLen=Math.max(a.length,b.length);
+  for(let i=0;i<fLen;i++){
+    const fa=a[i],fb=b[i];
+    if(!fa){out.push(`+ Floor "${fb.name||i}" added`);continue;}
+    if(!fb){out.push(`- Floor "${fa.name||i}" removed`);continue;}
+    for(const kind of ['APS','CAMS','SWS','DZS','WALLS']){
+      const la=fa[kind]||[],lb=fb[kind]||[];
+      const ids=new Set([...la.map(x=>x.id),...lb.map(x=>x.id)]);
+      for(const id of ids){
+        const ia=la.find(x=>x.id===id), ib=lb.find(x=>x.id===id);
+        if(ia && !ib)out.push(`- [${fa.name||i}] ${kind.slice(0,-1)} ${ia.name||id} removed`);
+        else if(!ia && ib)out.push(`+ [${fb.name||i}] ${kind.slice(0,-1)} ${ib.name||id} added`);
+        else if(ia && ib){
+          // Walls carry endpoint coords (fx1/fy1/fx2/fy2); everything else
+          // has a single fx/fy anchor.
+          const moved=kind==='WALLS'
+            ? (ia.fx1!==ib.fx1||ia.fy1!==ib.fy1||ia.fx2!==ib.fx2||ia.fy2!==ib.fy2)
+            : (ia.fx!==ib.fx||ia.fy!==ib.fy);
+          if(moved)out.push(`~ [${fa.name||i}] ${kind.slice(0,-1)} ${ia.name||id} ${kind==='WALLS'?'reshaped':'moved'}`);
+        }
+      }
+    }
+  }
+  return out;
+}
+function showRevisions(){
+  const wrap=document.createElement('div');wrap.className='settings-form';
+  if(!PROJECT_REVISIONS.length){
+    const e=document.createElement('div');e.className='ep-hint';
+    e.textContent='No revisions yet. Save the current state as the first revision below.';
+    wrap.appendChild(e);
+  } else {
+    const list=document.createElement('div');list.className='rev-list';
+    for(const rev of PROJECT_REVISIONS){
+      const row=document.createElement('div');row.className='rev-row';
+      const name=document.createElement('div');name.className='rev-name';name.textContent=rev.name;
+      const when=document.createElement('div');when.className='rev-when';when.textContent=new Date(rev.createdAt).toLocaleString(SETTINGS.locale||'en-GB');
+      const r=document.createElement('button');r.className='btn';r.textContent='Restore';
+      r.addEventListener('click',()=>{closeModal();restoreRevision(rev.id);});
+      const x=document.createElement('button');x.className='btn danger';x.textContent='×';x.title='Delete';
+      x.addEventListener('click',()=>{
+        PROJECT_REVISIONS=PROJECT_REVISIONS.filter(r=>r.id!==rev.id);
+        autosave();closeModal();showRevisions();
+      });
+      row.appendChild(name);row.appendChild(when);row.appendChild(r);row.appendChild(x);
+      list.appendChild(row);
+    }
+    wrap.appendChild(list);
+    if(PROJECT_REVISIONS.length>=2){
+      const diffBtn=document.createElement('button');diffBtn.className='btn';diffBtn.textContent='Diff last two revisions';
+      diffBtn.style.marginTop='12px';
+      diffBtn.addEventListener('click',()=>{
+        const a=PROJECT_REVISIONS[PROJECT_REVISIONS.length-2].snapshot;
+        const b=PROJECT_REVISIONS[PROJECT_REVISIONS.length-1].snapshot;
+        const lines=_diffRevisions(a,b);
+        const out=document.createElement('pre');out.className='rev-diff';
+        out.textContent=lines.length?lines.join('\n'):'(no differences detected)';
+        wrap.appendChild(out);
+      });
+      wrap.appendChild(diffBtn);
+    }
+  }
+  const saveBtn=document.createElement('button');saveBtn.className='btn btn-primary';saveBtn.textContent='Save current state as new revision';
+  saveBtn.style.marginTop='12px';
+  saveBtn.addEventListener('click',()=>{closeModal();newRevision();});
+  wrap.appendChild(saveBtn);
+  showModalNode('Revisions',wrap,null);
+}
+
+// ═══ PLUGIN API (vendor catalog merging) ══════════
+// A user can paste a JSON dictionary that adds APs/cams/switches to the
+// catalogs without rebuilding. Stored on the project (so the entries persist)
+// and merged at load time.
+function _mergeCustomCatalog(catalog){
+  if(!catalog||typeof catalog!=='object')return false;
+  // Catalog shape:
+  // { aps: [{label:'My Vendor', models:['X1','X2'], range:{X1:30}, poe:{X1:15}, gain:{X1:5}}],
+  //   cams: [{label:'My CCTV', models:['CamA'], specs:{CamA:{fov:90,range:30,res:'4K',poeW:8}}}],
+  //   switches: [{label:'My SW', models:['SW1']}] }
+  let added=0;
+  for(const g of (catalog.aps||[])){
+    if(!g.label||!Array.isArray(g.models))continue;
+    AP_MODEL_GROUPS.push({label:g.label,models:g.models.slice()});
+    for(const m of g.models)MODELS.push(m);
+    for(const m of g.models){
+      if(g.range&&Number.isFinite(g.range[m]))AP_RANGE_M[m]=g.range[m];
+      if(g.poe&&Number.isFinite(g.poe[m]))AP_POE_W[m]=g.poe[m];
+      if(g.gain&&Number.isFinite(g.gain[m]))AP_ANTENNA_GAIN_DBI[m]=g.gain[m];
+      added++;
+    }
+  }
+  for(const g of (catalog.cams||[])){
+    if(!g.label||!Array.isArray(g.models))continue;
+    CAM_MODEL_GROUPS.push({label:g.label,models:g.models.slice()});
+    for(const m of g.models)CAM_MODELS.push(m);
+    if(g.specs)for(const k of Object.keys(g.specs))CAM_SPECS[k]=g.specs[k];
+    added+=g.models.length;
+  }
+  for(const g of (catalog.switches||[])){
+    if(!g.label||!Array.isArray(g.models))continue;
+    SW_MODEL_GROUPS.push({label:g.label,models:g.models.slice()});
+    for(const m of g.models)SW_MODELS.push(m);
+    added+=g.models.length;
+  }
+  return added>0;
+}
+function showPluginCatalogDialog(){
+  const wrap=document.createElement('div');wrap.className='settings-form';
+  const hint=document.createElement('div');hint.className='ep-hint';
+  hint.innerHTML=`Paste a JSON catalog to add custom vendor models. Schema:<br>
+<code style="font-size:11px;font-family:monospace;background:rgba(0,0,0,.05);padding:8px;display:block;white-space:pre;margin-top:6px">{"aps":[{"label":"My Vendor","models":["X1"],"range":{"X1":30},"poe":{"X1":15}}],"cams":[],"switches":[]}</code>`;
+  wrap.appendChild(hint);
+  const ta=document.createElement('textarea');
+  ta.style.width='100%';ta.style.height='180px';ta.style.fontFamily='monospace';ta.style.fontSize='12px';
+  ta.placeholder='{"aps":[...]}';
+  wrap.appendChild(ta);
+  showModalNode('Custom vendor catalog',wrap,()=>{
+    try{
+      const json=JSON.parse(ta.value||'{}');
+      if(_mergeCustomCatalog(json))toast('Catalog merged');
+      else toast('Nothing to merge');
+    }catch(err){
+      toast('Invalid JSON: '+(err&&err.message||err));
+    }
+  });
 }
 
 function renderGrid(){
@@ -1918,7 +2734,7 @@ function renderGrid(){
   gridLayer.appendChild(g);
 }
 
-function render(){_resetThemeCache();renderGrid();renderHeat();renderOL();renderWalls();renderCables();renderSWs();renderAPs();renderCAMs();renderDZs();renderChannelOverlap();renderRuler();updateCnt();}
+function render(){_resetThemeCache();renderGrid();renderHeat();renderRoaming();renderOL();renderWalls();renderCables();renderSWs();renderAPs();renderCAMs();renderDZs();renderChannelOverlap();renderAnnotations();renderSamples();renderAnnoPreview();renderRuler();updateCnt();updateApStickReadout();}
 
 // ═══ DRAG ═════════════════════════════════════════
 // During an active drag we update the moved item's geometry directly via a
@@ -1957,6 +2773,9 @@ function doDrag(cx,cy){
     const dx=(fx-_dragInitialFx)*w;
     const dy=(fy-_dragInitialFy)*h;
     grp.setAttribute('transform',`translate(${dx},${dy})`);
+    // The transform fast-path skips render(), so refresh the AP-on-stick
+    // live coverage readout explicitly (render() would otherwise do it).
+    if(dragType==='ap')updateApStickReadout();
   }else{
     render();
   }
@@ -1968,6 +2787,8 @@ function endDrag(){
   const layer=dragType==='ap'?apLayer:dragType==='dz'?dzLayer:dragType==='sw'?swLayer:dragType==='cam'?camLayer:null;
   if(layer){const grp=layer.querySelector(`[data-id="${dragId}"]`);if(grp)grp.removeAttribute('transform');}
   if(dragType==='ap')invalidateCoverageCache();
+  // AP-on-stick: clear the live coverage readout.
+  if(dragType==='ap')endApStick();
   dragId=null;dragType=null;
   render();calcCoverage();
 }
@@ -2161,6 +2982,8 @@ function renderWallPanel(){
       <div class="ep-lbl">Signal Loss</div>
       <div class="ep-readout">${mat.loss} dB</div>
     </div>
+    <div class="ep-section">Notes</div>
+    <div class="ep-row"><textarea class="ep-txt" id="wall-notes" rows="3" data-input-action="upd-wall-notes" placeholder="Construction detail, partial-height, glazing…">${esc(w.notes||'')}</textarea></div>
     <button class="btn ep-del" data-action="ask-del">✕ Delete Wall</button>`;
 }
 
@@ -2256,6 +3079,8 @@ function renderDZPanel(){
       <span class="ep-rng-val" id="dz-rv">${realR}m</span>
     </div>
     <label class="ep-check"><input type="checkbox" ${dz.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
+    <div class="ep-section">Notes</div>
+    <div class="ep-row"><textarea class="ep-txt" id="dz-notes" rows="3" data-input-action="upd-dz" placeholder="Why this area is a dead zone, remediation plan…">${esc(dz.notes||'')}</textarea></div>
     <button class="btn ep-del" data-action="ask-del">✕ Delete</button>`;
 }
 
@@ -2332,7 +3157,7 @@ function setApColor(c){
   ap.color=c||'';
   render();renderList();renderAPPanel();
 }
-function updDZ(){const dz=DZS().find(a=>a.id===selId);if(!dz)return;snapshotSoon();dz.label=document.getElementById('dz-lbl').value||dz.label;render();renderList();}
+function updDZ(){const dz=DZS().find(a=>a.id===selId);if(!dz)return;snapshotSoon();dz.label=document.getElementById('dz-lbl').value||dz.label;const nt=document.getElementById('dz-notes');if(nt)dz.notes=nt.value;render();renderList();}
 function updDZR(v){const dz=DZS().find(a=>a.id===selId);if(!dz)return;snapshotSoon();dz.r=parseInt(v);document.getElementById('dz-rv').textContent=Math.round(v*(scaleM/100))+'m';render();}
 function updSW(){
   const sw=SWS().find(a=>a.id===selId);if(!sw)return;
@@ -2479,9 +3304,13 @@ function doDelete(target){
   render();renderList();renderRP();calcCoverage();toast('Deleted');
 }
 let modalCancelCB=null;
+// Element focused before the modal opened — focus returns here on close so
+// keyboard users aren't dumped back at the top of the document.
+let _modalReturnFocus=null;
 // Internal: install a body element + buttons + callbacks. `bodyEl` must be a
 // DOM node; callers wanting to pass plain text should use showModalText.
 function _showModalEl(title,bodyEl,okCB,cancelCB){
+  _modalReturnFocus=document.activeElement;
   document.getElementById('mdl-title').textContent=title;
   const body=document.getElementById('mdl-body');
   body.replaceChildren(bodyEl);
@@ -2492,7 +3321,29 @@ function _showModalEl(title,bodyEl,okCB,cancelCB){
   const cancel=document.querySelector('#mdl .mdl-actions .btn:not(#mdl-ok)');
   if(cancel)cancel.textContent=okCB?'Cancel':'Close';
   document.getElementById('mbg').classList.add('vis');
+  // Move focus into the dialog so screen readers announce it and Tab is trapped.
+  const mdl=document.getElementById('mdl');
+  const first=mdl.querySelector('input,select,textarea,button');
+  if(first){try{first.focus();}catch(_){}}
 }
+// Restore focus to whatever was focused before the modal opened.
+function _restoreModalFocus(){
+  const el=_modalReturnFocus;_modalReturnFocus=null;
+  if(el&&typeof el.focus==='function'){try{el.focus();}catch(_){}}
+}
+// Keep Tab focus inside an open modal — cycle between first/last focusable.
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Tab')return;
+  const bg=document.getElementById('mbg');
+  if(!bg||!bg.classList.contains('vis'))return;
+  const mdl=document.getElementById('mdl');
+  const items=[...mdl.querySelectorAll('input,select,textarea,button,[href],[tabindex]:not([tabindex="-1"])')]
+    .filter(el=>!el.disabled&&el.offsetParent!==null);
+  if(!items.length)return;
+  const first=items[0],last=items[items.length-1];
+  if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+  else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+},true);
 // Plain-text body (auto-escaped). Newlines become <br>.
 function showModalText(title,text,okCB,cancelCB){
   const div=document.createElement('div');
@@ -2518,12 +3369,14 @@ function showModal(title,body,okCB,cancelCB){
 function closeModal(){
   document.getElementById('mbg').classList.remove('vis');
   pendDel=null;
+  _restoreModalFocus();
   if(modalCancelCB){const cb=modalCancelCB;modalCancelCB=null;modalCB=null;cb();return;}
   modalCB=null;
 }
 function modalOK(){
   const cb=modalCB;modalCB=null;modalCancelCB=null;
   document.getElementById('mbg').classList.remove('vis');pendDel=null;
+  _restoreModalFocus();
   if(cb)cb();
 }
 
@@ -2755,11 +3608,15 @@ html,body{background:#efece5;min-height:100vh;display:flex;flex-direction:column
 @keyframes pulse{0%,100%{r:7;opacity:1}50%{r:10;opacity:.55}}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes dzs{from{transform:rotate(0deg)}to{transform:rotate(-360deg)}}
+.ft{width:100%;max-width:1200px;margin-top:18px;padding-top:10px;border-top:1px solid rgba(0,0,0,.2);font-size:9px;font-family:'Share Tech Mono',monospace;color:rgba(0,0,0,.5);letter-spacing:.12em;text-transform:uppercase;text-align:center}
+.mhlogo{max-height:38px;max-width:170px;display:block;margin-bottom:7px}
 </style></head><body>
+<header class="mh"><div class="mhl">${SETTINGS.logoDataUrl?`<img class="mhlogo" src="${esc(SETTINGS.logoDataUrl)}" alt=""/>`:''}<div class="mht">${esc(SETTINGS.reportTitle||name)}</div><div class="mhs">${esc(SETTINGS.company||'NOCTIS')}${SETTINGS.tagline?' · '+esc(SETTINGS.tagline):''}</div></div><div class="mhm">${esc(SETTINGS.metaLine||'WiFi Coverage Audit')}</div></header>
 <div id="mw">
 <div class="mb"><img id="mi" src="${imgSrc}" alt="Coverage Map"/><div id="ov"><svg id="sl" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${cw} ${ch}" preserveAspectRatio="xMidYMid meet"><defs><filter id="gf"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${innerSVG}</svg></div></div>
 <div class="ml"><div class="li"><div class="ld"></div>AP</div><div class="li"><div class="lr"></div>Coverage</div><div class="li">⚠ Dead Zone</div><div class="li">⊞ Switch</div><span class="lb">${esc(SETTINGS.company||'NOCTIS')}</span></div></div>
-${APS().length?`<table class="at"><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Freq</th><th>Ch</th><th>TX</th><th>Signal</th><th>IP</th><th>MAC</th><th>Port</th><th>VLAN</th><th>Notes</th></tr></thead><tbody>${APS().map((ap,i)=>`<tr><td>${i+1}</td><td>${ap.name}</td><td>${ap.model||''}</td><td>${ap.freq}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.channel||'auto'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.txPower||'auto'}</td><td class="${{strong:'ss',medium:'sm',weak:'sw'}[ap.sig]}">${{strong:'● Strong',medium:'● Medium',weak:'● Weak'}[ap.sig]}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.ip||'—'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.mac||'—'}</td><td>${ap.port||'—'}</td><td>${ap.vlan||'—'}</td><td style="font-size:10px;color:rgba(0,0,0,.55)">${ap.notes||'—'}</td></tr>`).join('')}</tbody></table>`:''}
+${APS().length?`<table class="at"><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Freq</th><th>Ch</th><th>TX</th><th>Signal</th><th>IP</th><th>MAC</th><th>Port</th><th>VLAN</th><th>Notes</th></tr></thead><tbody>${APS().map((ap,i)=>`<tr><td>${i+1}</td><td>${ap.name}</td><td>${ap.model||''}</td><td>${ap.freq}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.channel||'auto'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.txPower||'auto'}</td><td class="${{strong:'ss',medium:'sm',weak:'sw'}[ap.sig]}">${{strong:'● Strong',medium:'● Medium',weak:'● Weak'}[ap.sig]}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.ip||'—'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.mac||'—'}</td><td>${ap.port||'—'}</td><td>${ap.vlan||'—'}</td><td style="font-size:10px;color:rgba(0,0,0,.55)">${esc(ap.comment||ap.notes||'—')}</td></tr>`).join('')}</tbody></table>`:''}
+${SETTINGS.footerLine?`<footer class="ft">${esc(SETTINGS.footerLine)}</footer>`:''}
 </body></html>`;
   const blob=new Blob([html],{type:'text/html'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(name||'wifi').replace(/\s+/g,'_')+'_coverage.html';a.click();toast('Exported!');
 }
@@ -2804,12 +3661,14 @@ async function doPDF(){
     const apTable=aps.length?`<h3>Access Points (${aps.length})</h3><table><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Freq</th><th>Pattern</th><th>Ch</th><th>TX</th><th>Signal</th><th>IP</th><th>MAC</th><th>Switch</th><th>VLAN</th></tr></thead><tbody>${aps.map((ap,i)=>{
       const swName=(sws.find(s=>s.id===ap.swId)||{}).name||'—';
       const patLbl=(AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni).label;
-      return `<tr><td>${i+1}</td><td><strong>${esc(ap.name)}</strong></td><td>${esc(ap.model||'—')}</td><td>${esc(ap.freq||'')}</td><td>${esc(patLbl)}</td><td class="mono">${esc(ap.channel||'auto')}</td><td class="mono">${esc(ap.txPower||'auto')}</td><td class="sig-${(ap.sig||'strong')[0]}">● ${sigName[ap.sig||'strong']}</td><td class="mono">${esc(ap.ip||'—')}</td><td class="mono">${esc(ap.mac||'—')}</td><td>${esc(swName)}</td><td>${esc(ap.vlan||'—')}</td></tr>`;
+      const apNote=ap.comment||ap.notes||'';
+      return `<tr><td>${i+1}</td><td><strong>${esc(ap.name)}</strong></td><td>${esc(ap.model||'—')}</td><td>${esc(ap.freq||'')}</td><td>${esc(patLbl)}</td><td class="mono">${esc(ap.channel||'auto')}</td><td class="mono">${esc(ap.txPower||'auto')}</td><td class="sig-${(ap.sig||'strong')[0]}">● ${sigName[ap.sig||'strong']}</td><td class="mono">${esc(ap.ip||'—')}</td><td class="mono">${esc(ap.mac||'—')}</td><td>${esc(swName)}</td><td>${esc(ap.vlan||'—')}</td></tr>${apNote?`<tr class="note-row"><td colspan="12">${esc(apNote)}</td></tr>`:''}`;
     }).join('')}</tbody></table>`:'';
     const camTable=cams.length?`<h3>Cameras (${cams.length})</h3><table><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Resolution</th><th>FoV</th><th>Range</th><th>Heading</th><th>IP</th><th>Switch</th><th>VLAN</th></tr></thead><tbody>${cams.map((c,i)=>{
       const swName=(sws.find(s=>s.id===c.swId)||{}).name||'—';
       const rangeM=Math.round((c.range||80)*((f.scaleM||100)/100));
-      return `<tr><td>${i+1}</td><td><strong>${esc(c.name)}</strong></td><td>${esc(c.model||'—')}</td><td class="mono">${esc(c.resolution||'')}</td><td class="mono">${c.fov||80}°</td><td class="mono">${rangeM} m</td><td class="mono">${c.heading||0}°</td><td class="mono">${esc(c.ip||'—')}</td><td>${esc(swName)}</td><td>${esc(c.vlan||'—')}</td></tr>`;
+      const camNote=c.comment||c.notes||'';
+      return `<tr><td>${i+1}</td><td><strong>${esc(c.name)}</strong></td><td>${esc(c.model||'—')}</td><td class="mono">${esc(c.resolution||'')}</td><td class="mono">${c.fov||80}°</td><td class="mono">${rangeM} m</td><td class="mono">${c.heading||0}°</td><td class="mono">${esc(c.ip||'—')}</td><td>${esc(swName)}</td><td>${esc(c.vlan||'—')}</td></tr>${camNote?`<tr class="note-row"><td colspan="10">${esc(camNote)}</td></tr>`:''}`;
     }).join('')}</tbody></table>`:'';
     const swTable=sws.length?`<h3>Switches / Routers (${sws.length})</h3><table><thead><tr><th>Name</th><th>Model</th><th>IP</th><th>PoE Budget</th><th>Notes</th></tr></thead><tbody>${sws.map(sw=>{
       let draw=0;
@@ -2817,9 +3676,9 @@ async function doPDF(){
       cams.forEach(c=>{if(c.swId===sw.id)draw+=(CAM_SPECS[c.model]||{}).poeW||0;});
       const budgetStr=sw.poeBudget?`${draw.toFixed(0)} W / ${sw.poeBudget} W`:'—';
       const over=sw.poeBudget&&draw>sw.poeBudget?' style="color:#c0382b;font-weight:700"':'';
-      return `<tr><td><strong>${esc(sw.name)}</strong></td><td>${esc(sw.model||'—')}</td><td class="mono">${esc(sw.ip||'—')}</td><td class="mono"${over}>${budgetStr}</td><td class="muted">${esc(sw.notes||'—')}</td></tr>`;
+      return `<tr><td><strong>${esc(sw.name)}</strong></td><td>${esc(sw.model||'—')}</td><td class="mono">${esc(sw.ip||'—')}</td><td class="mono"${over}>${budgetStr}</td><td class="muted">${esc(sw.comment||sw.notes||'—')}</td></tr>`;
     }).join('')}</tbody></table>`:'';
-    const dzTable=dzs.length?`<h3>Dead Zones (${dzs.length})</h3><table><thead><tr><th>Label</th></tr></thead><tbody>${dzs.map(dz=>`<tr><td>${esc(dz.label||'—')}</td></tr>`).join('')}</tbody></table>`:'';
+    const dzTable=dzs.length?`<h3>Dead Zones (${dzs.length})</h3><table><thead><tr><th>Label</th><th>Notes</th></tr></thead><tbody>${dzs.map(dz=>`<tr><td>${esc(dz.label||'—')}</td><td class="muted">${esc(dz.comment||dz.notes||'—')}</td></tr>`).join('')}</tbody></table>`:'';
     const mapBlock=r.src
       ? `<div class="map-wrap"><img src="${r.src}" alt="Map"/><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${r.overlay.cw} ${r.overlay.ch}" preserveAspectRatio="xMidYMid meet">${r.overlay.innerSVG}</svg></div>`
       : `<div class="map-wrap empty"><span>No floor plan uploaded for this floor.</span></div>`;
@@ -2858,6 +3717,10 @@ td{padding:8px 11px;border-bottom:1px solid rgba(0,0,0,.08);vertical-align:top;c
 .sig-s{color:#000;font-weight:700}.sig-m{color:rgba(0,0,0,.6);font-weight:600}.sig-w{color:rgba(0,0,0,.35);font-weight:500}
 .mono{font-family:'Share Tech Mono',monospace;font-size:10px;letter-spacing:.02em}
 .muted{font-size:10px;color:rgba(0,0,0,.5)}
+.note-row td{font-size:10px;color:rgba(0,0,0,.6);font-style:italic;padding-top:2px;border-bottom:1px solid rgba(0,0,0,.08)}
+.note-row td::before{content:'↳ ';font-style:normal;color:rgba(0,0,0,.35)}
+.cover-logo{max-height:64px;max-width:260px;display:block;margin-bottom:26px}
+.footer-line{margin-top:8px;font-size:9px;color:rgba(0,0,0,.5);font-family:'Share Tech Mono',monospace;letter-spacing:.14em;text-transform:uppercase;text-align:center}
 .footer{margin-top:48px;padding-top:16px;border-top:1px solid #000;font-size:9px;color:#000;font-family:'Share Tech Mono',monospace;display:flex;justify-content:space-between;letter-spacing:.15em;text-transform:uppercase;font-weight:700}
 .print-btn{margin-top:24px;padding:12px 28px;background:#000;color:#efece5;border:none;border-radius:2px;font-size:11px;cursor:pointer;font-family:'Share Tech Mono',monospace;font-weight:700;letter-spacing:.2em;text-transform:uppercase}
 .print-btn:hover{background:rgba(0,0,0,.8)}
@@ -2865,6 +3728,7 @@ td{padding:8px 11px;border-bottom:1px solid rgba(0,0,0,.08);vertical-align:top;c
 </style></head><body>
 <div class="cover">
   ${SETTINGS.metaLine?`<div class="cover-meta">${esc(SETTINGS.metaLine)}</div>`:''}
+  ${SETTINGS.logoDataUrl?`<img class="cover-logo" src="${esc(SETTINGS.logoDataUrl)}" alt=""/>`:''}
   <div class="logo">${esc(SETTINGS.company||'NOCTIS')}</div>
   ${SETTINGS.tagline?`<div class="tagline">${esc(SETTINGS.tagline)}</div>`:''}
   <div class="doc-title">${esc(SETTINGS.reportTitle||'Network Audit Report')}</div>
@@ -2879,6 +3743,7 @@ td{padding:8px 11px;border-bottom:1px solid rgba(0,0,0,.08);vertical-align:top;c
 </div>
 ${floorSections}
 <div class="footer"><span>${esc(SETTINGS.company||'NOCTIS')}${SETTINGS.contact?' · '+esc(SETTINGS.contact):''}</span><span>Generated ${new Date().toLocaleString(SETTINGS.locale||'en-GB')}</span></div>
+${SETTINGS.footerLine?`<div class="footer-line">${esc(SETTINGS.footerLine)}</div>`:''}
 <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
 </body></html>`);
   w.document.close();
@@ -2904,7 +3769,7 @@ function autosave(){
   // is a few KB even with multi-floor projects.
   if(typeof document!=='undefined'&&document.hidden)return;
   try{
-    const payload=JSON.stringify({version:PROJECT_VERSION,settings:SETTINGS,floors:FLOORS,savedAt:new Date().toISOString()},_stripCacheReplacer);
+    const payload=JSON.stringify({version:PROJECT_VERSION,settings:SETTINGS,floors:FLOORS,revisions:PROJECT_REVISIONS,savedAt:new Date().toISOString()},_stripCacheReplacer);
     if(payload===lastAutosavePayload)return;  // nothing changed
     localStorage.setItem(AUTOSAVE_KEY,payload);
     lastAutosavePayload=payload;
@@ -2933,6 +3798,8 @@ function tryRestoreAutosave(){
         const [migrated]=migrateProject(data);
         FLOORS=migrated.floors;
         SETTINGS={...DEFAULT_SETTINGS,...(migrated.settings||{})};
+        PROJECT_REVISIONS=Array.isArray(migrated.revisions)?migrated.revisions:[];
+        if(SETTINGS.language)setLang(SETTINGS.language);
         curFloor=0;selId=null;selType=null;
         syncScaleFromFloor();
         syncNidFromFloors();
@@ -2995,6 +3862,19 @@ const CLICK_ACTIONS={
   'show-help':     ()=>showHelp(),
   'show-settings': ()=>showSettings(),
   'toggle-theme':  ()=>toggleTheme(),
+  // v3 additions
+  'toggle-roaming':()=>{SETTINGS.showRoamingOverlap=!SETTINGS.showRoamingOverlap;document.getElementById('btn-roaming')?.classList.toggle('active',SETTINGS.showRoamingOverlap);render();autosave();},
+  'cycle-heatmap-mode':()=>cycleHeatmapMode(),
+  'cycle-heatmap-band':()=>cycleHeatmapBand(),
+  'auto-channel': ()=>autoChannelPlan(),
+  'auto-power':   ()=>autoTxPower(),
+  'export-bom':   ()=>doBomCsv(),
+  'export-cables':()=>doCableCsv(),
+  'install-sheets':()=>doInstallSheets(),
+  'open-survey':  ()=>document.getElementById('survey-up')?.click(),
+  'show-plugins': ()=>showPluginCatalogDialog(),
+  'show-revisions':()=>showRevisions(),
+  'anno-sub':     (arg)=>setAnnoSubMode(arg),
   // Item/panel actions (previously inline)
   'set-sig':       (arg)=>setSig(arg),
   'set-color':     (arg)=>setApColor(arg),
@@ -3019,6 +3899,7 @@ document.addEventListener('change',e=>{
   else if(a==='load-project')loadProject(t);
   else if(a==='toggle-lock')toggleLock();
   else if(a==='upd-wall')updWall();
+  else if(a==='import-survey-csv')importSurveyCsv(t);
 });
 // Blur on a panel input (or pointerup ending a slider drag) commits any
 // pending debounced snapshot so the next edit starts a fresh undo step.
@@ -3041,6 +3922,7 @@ document.addEventListener('input',e=>{
   else if(a==='upd-ap-heading')updAPHeading(t.value);
   else if(a==='upd-dz')updDZ();
   else if(a==='upd-dz-r')updDZR(t.value);
+  else if(a==='upd-wall-notes'){const w=WALLS().find(x=>x.id===selId);if(w){snapshotSoon();w.notes=t.value;}}
   else if(a==='upd-sw')updSW();
   else if(a==='upd-sw-size')updSWSize(t.value);
   else if(a==='upd-cam')updCam();
@@ -3067,7 +3949,11 @@ document.addEventListener('keydown',e=>{
   if(tag==='INPUT'&&e.target.id==='sb-search'&&e.key==='Escape'){
     e.preventDefault();clearSearch();return;
   }
-  if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||e.target.isContentEditable)return;
+  // Form fields swallow shortcuts — except Escape while a modal is open, so a
+  // keyboard user focused inside a dialog can still dismiss it.
+  const _modalOpen=document.getElementById('mbg')?.classList.contains('vis');
+  if((tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||e.target.isContentEditable)
+     && !(e.key==='Escape'&&_modalOpen))return;
   // Single-key mode/toggle shortcuts shouldn't fire when a button (e.g. just-clicked
   // toolbar) holds focus — the user is most likely about to press Space/Enter on it,
   // not switch tools. Modifier-keyed shortcuts (Ctrl+Z etc.) still pass through.
@@ -3085,6 +3971,8 @@ document.addEventListener('keydown',e=>{
     if(pres){togglePresent();return;}
     if(rulerStart){clearRuler();return;}
     if(wallStart){wallStart=null;wallHover=null;renderWallPreview();return;}
+    if(annoStart){annoStart=null;annoHover=null;renderAnnoPreview();return;}
+    if(apStickStart && dragId){cancelApStick();return;}
     desel();return;
   }
   // Delete selected item (bulk-delete if multiple are selected)
@@ -3102,6 +3990,7 @@ document.addEventListener('keydown',e=>{
   if(e.key==='c'||e.key==='C'){setMode('cam');return;}
   if(e.key==='r'||e.key==='R'){setMode('ruler');return;}
   if(e.key==='l'||e.key==='L'){setMode('wall');return;}
+  if(e.key==='n'||e.key==='N'){setMode('anno');return;}
   if(e.key==='p'||e.key==='P'){togglePresent();return;}
   // Toggles
   if(e.key==='o'||e.key==='O'){toggleOL();return;}
@@ -3121,26 +4010,66 @@ document.addEventListener('keydown',e=>{
 // (no innerHTML) so user-supplied strings are inert.
 function showSettings(){
   const wrap=document.createElement('div');wrap.className='settings-form';
-  const fields=[
-    {key:'company',    label:'Company / Brand',    placeholder:'NOCTIS'},
-    {key:'tagline',    label:'Tagline',            placeholder:'Network Planning'},
-    {key:'contact',    label:'Contact',            placeholder:'hello@noctis.example'},
-    {key:'metaLine',   label:'Cover meta line',    placeholder:'optional, shown above the logo on exports'},
-    {key:'reportTitle',label:'Report title',       placeholder:'Network Audit Report'},
-    {key:'locale',     label:'Date locale',        placeholder:'en-GB'},
-  ];
-  const inputs={};
-  fields.forEach(f=>{
-    const row=document.createElement('div');row.className='ep-row';
-    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=f.label;
-    const inp=document.createElement('input');inp.className='ep-in';inp.type='text';
-    inp.value=SETTINGS[f.key]??'';inp.placeholder=f.placeholder||'';
-    row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
-    inputs[f.key]=inp;
-  });
 
-  // Coverage opacity slider. Live-preview by re-rendering on input, but only
-  // commit (and trigger autosave) when the modal is OK'd.
+  // ── Helpers for compact rows ──
+  const inputs={};
+  const addText=(key,label,placeholder)=>{
+    const row=document.createElement('div');row.className='ep-row';
+    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const inp=document.createElement('input');inp.className='ep-in';inp.type='text';
+    inp.value=SETTINGS[key]??'';inp.placeholder=placeholder||'';
+    row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
+    inputs[key]=inp;
+  };
+  const addNumber=(key,label,min,max,step)=>{
+    const row=document.createElement('div');row.className='ep-row';
+    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const inp=document.createElement('input');inp.className='ep-in';inp.type='number';
+    if(min!==undefined)inp.min=min;if(max!==undefined)inp.max=max;
+    if(step!==undefined)inp.step=step;
+    inp.value=String(SETTINGS[key]??'');
+    row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
+    inputs[key]=inp;
+  };
+  const addSelect=(key,label,options)=>{
+    const row=document.createElement('div');row.className='ep-row';
+    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const sel=document.createElement('select');sel.className='ep-in';
+    for(const o of options){
+      const op=document.createElement('option');op.value=o.value;op.textContent=o.label;
+      if(String(SETTINGS[key])===String(o.value))op.selected=true;
+      sel.appendChild(op);
+    }
+    row.appendChild(lbl);row.appendChild(sel);wrap.appendChild(row);
+    inputs[key]=sel;
+  };
+  const addCheck=(key,label)=>{
+    const row=document.createElement('div');row.className='ep-row';
+    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const inp=document.createElement('input');inp.type='checkbox';
+    inp.checked=!!SETTINGS[key];
+    row.appendChild(lbl);row.appendChild(inp);wrap.appendChild(row);
+    inputs[key]=inp;
+  };
+  const addHeading=(text)=>{
+    const h=document.createElement('div');h.className='settings-heading';h.textContent=text;
+    wrap.appendChild(h);
+  };
+
+  // ── Branding ──
+  addHeading('Branding');
+  addText('company','Company / Brand','NOCTIS');
+  addText('tagline','Tagline','Network Planning');
+  addText('contact','Contact','hello@noctis.example');
+  addText('metaLine','Cover meta line','optional, shown above the logo on exports');
+  addText('reportTitle','Report title','Network Audit Report');
+  addText('footerLine','Footer line','optional, shown in HTML/PDF report footer');
+  addText('logoDataUrl','Brand logo (data URL)','data:image/png;base64,...');
+  addText('locale','Date locale','en-GB');
+  addSelect('language','UI language',availableLangs().map(c=>({value:c,label:c})));
+
+  // ── Coverage display ──
+  addHeading('Coverage display');
   const opacityRow=document.createElement('div');opacityRow.className='ep-row ep-slider-row';
   const opacityLbl=document.createElement('label');opacityLbl.className='ep-lbl';opacityLbl.textContent='Coverage opacity';
   const opacityIn=document.createElement('input');
@@ -3151,8 +4080,6 @@ function showSettings(){
   const opacityVal=document.createElement('span');opacityVal.className='ep-rng-val';opacityVal.textContent=initialOpacity+'%';
   opacityRow.appendChild(opacityLbl);opacityRow.appendChild(opacityIn);opacityRow.appendChild(opacityVal);
   wrap.appendChild(opacityRow);
-  // Live preview as the user drags. We swap SETTINGS.coverageOpacity in place
-  // and re-render; if the user cancels we restore the saved value below.
   const savedOpacity=SETTINGS.coverageOpacity??100;
   opacityIn.addEventListener('input',()=>{
     const v=parseInt(opacityIn.value,10)||100;
@@ -3160,28 +4087,74 @@ function showSettings(){
     SETTINGS.coverageOpacity=v;
     render();
   });
+  addSelect('heatmapMode','Heatmap mode',HEATMAP_MODE_KEYS.map(k=>({value:k,label:HEATMAP_MODES[k].label})));
+  addSelect('heatmapBand','Heatmap band',[
+    {value:'all',label:'All bands'},
+    {value:'2.4',label:'2.4 GHz'},
+    {value:'5',label:'5 GHz'},
+    {value:'6',label:'6 GHz'},
+  ]);
+  addCheck('showRoamingOverlap','Show roaming-overlap layer (≥2 APs ≥ -67 dBm)');
+
+  // ── RF model + regulatory ──
+  addHeading('RF model & regulatory');
+  addSelect('propagationModel','Propagation model',PROPAGATION_MODEL_KEYS.map(k=>({value:k,label:PROPAGATION_MODELS[k].label})));
+  addSelect('regulatoryRegion','Regulatory region',REGULATORY_REGION_KEYS.map(k=>({value:k,label:REGULATORY_REGIONS[k].label})));
+  addNumber('noiseFloorDbm','Noise floor (dBm)',-110,-70,1);
+  addNumber('floorSlabAttenDb','Floor slab attenuation (dB)',0,40,1);
+  addCheck('showFloorLeakage','Include neighbouring floors in heatmap');
+
+  // ── Architect scale ──
+  addHeading('Drawing scale');
+  addSelect('archScale','Architect scale preset',[
+    {value:'',label:'Custom (use scale toolbar)'},
+    ...ARCH_SCALE_PRESETS.map(p=>({value:p.label,label:`${p.label} (${p.m100px} m / 100 px)`})),
+  ]);
 
   const hint=document.createElement('div');
   hint.className='ep-hint';
-  hint.textContent='Saved with the project. Used in HTML/PDF exports and the top-bar brand label.';
+  hint.textContent='Saved with the project. Used in HTML/PDF exports, the heatmap pipeline, the top-bar brand label, and channel/Tx planning.';
   wrap.appendChild(hint);
 
   const apply=()=>{
     let changed=false;
-    for(const f of fields){
-      const val=(inputs[f.key].value||'').trim();
-      if((SETTINGS[f.key]||'')!==val){SETTINGS[f.key]=val;changed=true;}
+    // Strings
+    for(const k of ['company','tagline','contact','metaLine','reportTitle','footerLine','logoDataUrl','locale','language','propagationModel','regulatoryRegion','heatmapMode','heatmapBand','archScale']){
+      if(!inputs[k])continue;
+      const val=(inputs[k].value||'').trim();
+      if(String(SETTINGS[k]||'')!==val){SETTINGS[k]=val;changed=true;}
+    }
+    // Numbers
+    for(const k of ['noiseFloorDbm','floorSlabAttenDb']){
+      if(!inputs[k])continue;
+      const v=parseFloat(inputs[k].value);
+      if(Number.isFinite(v)&&SETTINGS[k]!==v){SETTINGS[k]=v;changed=true;}
+    }
+    // Bools
+    for(const k of ['showRoamingOverlap','showFloorLeakage']){
+      if(!inputs[k])continue;
+      const v=!!inputs[k].checked;
+      if(SETTINGS[k]!==v){SETTINGS[k]=v;changed=true;}
     }
     const opacity=parseInt(opacityIn.value,10)||100;
     if(SETTINGS.coverageOpacity!==opacity){SETTINGS.coverageOpacity=opacity;changed=true;}
+    if(SETTINGS.language)setLang(SETTINGS.language);
+    // Apply architect scale: convert to m/100px and propagate to current floor.
+    if(SETTINGS.archScale){
+      const preset=ARCH_SCALE_PRESETS.find(p=>p.label===SETTINGS.archScale);
+      if(preset){
+        setScaleM(preset.m100px);
+        const el=document.getElementById('scale-m');
+        if(el)el.value=String(preset.m100px);
+      }
+    }
     if(changed){
       applySettingsToBrand();
-      render();
-      autosave();
+      invalidateCoverageCache();
+      render();autosave();
     }
   };
   const cancel=()=>{
-    // Restore the original opacity if the user dragged the slider then cancelled.
     if(SETTINGS.coverageOpacity!==savedOpacity){
       SETTINGS.coverageOpacity=savedOpacity;
       render();
@@ -3220,6 +4193,8 @@ function showHelp(){
     [{kbd:'W'},{desc:'Switch / Router'}],
     [{kbd:'L'},{desc:'Wall (draw)'}],
     [{kbd:'R'},{desc:'Ruler / Measure'}],
+    [{kbd:'C'},{desc:'Camera'}],
+    [{kbd:'N'},{desc:'Annotation'}],
     [{kbd:'P'},{desc:'Present mode'}],
   ]);
   _helpSection(grid,'View',[

@@ -2,9 +2,12 @@
 // unit-tested without booting the DOM/app shell.
 
 import {WALL_MATERIALS} from './geometry.js';
+import {AP_ANTENNA_GAIN_DBI} from './constants.js';
 
-export const PROJECT_VERSION=7;
+export const PROJECT_VERSION=8;
 
+// Settings that apply project-wide (branding, RF assumptions, region, defaults).
+// `coverageOpacity` / `lastModel` are user-preference style and live here too.
 export const DEFAULT_SETTINGS={
   company:    'NOCTIS',
   tagline:    'Network Planning',
@@ -12,8 +15,21 @@ export const DEFAULT_SETTINGS={
   locale:     'en-GB',
   metaLine:   '',
   reportTitle:'Network Audit Report',
-  coverageOpacity: 100,   // 20–100 — scales the coverage fill opacity
-  lastModel:       'U6 Pro',  // remembers last placed/selected AP model
+  coverageOpacity: 100,
+  lastModel:       'U6 Pro',
+  // v8 additions
+  propagationModel: 'logd',          // 'logd' | 'itu-indoor' | 'multi-wall'
+  regulatoryRegion: 'FCC-US',         // key into REGULATORY_REGIONS
+  noiseFloorDbm:    -95,              // for SNR/MCS/throughput maps
+  floorSlabAttenDb: 18,               // floor-to-floor slab loss in dB
+  showFloorLeakage: false,            // include neighbouring floors in heatmap
+  heatmapMode:      'rssi',           // 'rssi' | 'snr' | 'mcs' | 'throughput'
+  heatmapBand:      'all',            // 'all' | '2.4' | '5' | '6'
+  showRoamingOverlap:false,           // overlay where ≥2 APs deliver ≥-67 dBm
+  archScale:        '',               // optional architect-scale preset label
+  logoDataUrl:      '',               // brand logo for report cover
+  footerLine:       '',               // custom footer line in HTML/PDF exports
+  language:         'en',             // i18n locale code
 };
 
 const DEFAULT_FLOOR_SCALE_M=100;
@@ -26,13 +42,13 @@ const DEFAULT_FLOOR_SCALE_M=100;
 //   v2 → v3: APs get channel + txPower defaults.
 //   v3 → v4: each floor gets a WALLS array.
 //   v4 → v5: floor images move to IndexedDB; settings live at the top level.
-//   v5 → v6: walls store fractional coords (fx1/fy1/fx2/fy2);
-//            scaleM moves from project-level to per-floor.
-//   v6 → v7: per-floor CAMS array. APs gain pattern+heading for directional
-//            antennas. Each AP/camera carries `swPort` for PoE/cable runs.
-//
-// This function is sync and pure — actual IndexedDB promotion of inline
-// images happens in app.js after migrateProject() returns.
+//   v5 → v6: walls store fractional coords; scaleM moves to per-floor.
+//   v6 → v7: per-floor CAMS; APs gain pattern+heading; sw.poeBudget.
+//   v7 → v8: APs gain antennaGainDbi/cableLossDb/mountHeightM/downtiltDeg/
+//            capacityClients/txPowerDbm/comment; floors gain annotations[] and
+//            surveySamples[]; project-level revisions[]; settings gain
+//            propagation model / regulatory region / noise floor / slab loss
+//            / heatmap mode + band / branding logo + footer.
 export function migrateProject(data){
   const warnings=[];
   if(!data||typeof data!=='object'){throw new Error('Not a NOCTIS project file');}
@@ -44,22 +60,26 @@ export function migrateProject(data){
   if(data.settings&&typeof data.settings==='object'){
     const s={};
     for(const k of Object.keys(DEFAULT_SETTINGS)){
-      if(k==='coverageOpacity'){
-        if(typeof data.settings[k]==='number')s[k]=data.settings[k];
-      }else if(typeof data.settings[k]==='string'){
-        s[k]=data.settings[k];
+      const got=data.settings[k];
+      const def=DEFAULT_SETTINGS[k];
+      if(typeof def==='number'){
+        if(typeof got==='number'&&Number.isFinite(got))s[k]=got;
+      }else if(typeof def==='boolean'){
+        if(typeof got==='boolean')s[k]=got;
+      }else{
+        if(typeof got==='string')s[k]=got;
       }
     }
     data.settings={...DEFAULT_SETTINGS,...s};
   }else{
     data.settings={...DEFAULT_SETTINGS};
   }
+  if(!Array.isArray(data.revisions))data.revisions=[];
   // Project-level scaleM is the legacy default (pre-v6). New projects use
   // per-floor scaleM; old projects propagate the project-level value down.
   const projectScaleM=typeof data.scaleM==='number'&&data.scaleM>0?data.scaleM:DEFAULT_FLOOR_SCALE_M;
   data.floors.forEach(f=>{
     if(!f.imgId)f.imgId='';
-    // Per-floor scaleM. Honour any existing per-floor value; otherwise inherit.
     if(typeof f.scaleM!=='number'||f.scaleM<=0)f.scaleM=projectScaleM;
     (f.APS||[]).forEach(ap=>{
       if(!ap.model)ap.model='U6 Pro';
@@ -69,20 +89,31 @@ export function migrateProject(data){
       if(!ap.channel)ap.channel='auto';
       if(!ap.txPower)ap.txPower='auto';
       if(typeof ap.color!=='string')ap.color='';
-      // v6→v7: directional antenna defaults to omnidirectional (legacy behaviour).
       if(!ap.pattern)ap.pattern='omni';
       if(typeof ap.heading!=='number')ap.heading=0;
-      // Switch port for PoE/cable visualization; empty until the user assigns one.
       if(typeof ap.swId!=='string')ap.swId='';
+      // v7→v8
+      if(typeof ap.antennaGainDbi!=='number'){
+        ap.antennaGainDbi=AP_ANTENNA_GAIN_DBI[ap.model]??4;
+      }
+      if(typeof ap.cableLossDb!=='number')ap.cableLossDb=0;
+      if(typeof ap.txPowerDbm!=='number')ap.txPowerDbm=20;
+      if(typeof ap.mountHeightM!=='number')ap.mountHeightM=2.7;
+      if(typeof ap.downtiltDeg!=='number')ap.downtiltDeg=0;
+      if(typeof ap.capacityClients!=='number')ap.capacityClients=25;
+      if(typeof ap.comment!=='string')ap.comment='';
     });
-    (f.DZS||[]).forEach(dz=>{if(typeof dz.locked!=='boolean')dz.locked=false;if(typeof dz.r!=='number')dz.r=40;});
+    (f.DZS||[]).forEach(dz=>{
+      if(typeof dz.locked!=='boolean')dz.locked=false;
+      if(typeof dz.r!=='number')dz.r=40;
+      if(typeof dz.comment!=='string')dz.comment='';
+    });
     (f.SWS||[]).forEach(sw=>{
       if(typeof sw.locked!=='boolean')sw.locked=false;
       if(typeof sw.size!=='number'||sw.size<=0)sw.size=22;
-      // PoE budget in watts. 0 = "non-PoE" or unknown; user can override per switch.
       if(typeof sw.poeBudget!=='number')sw.poeBudget=0;
+      if(typeof sw.comment!=='string')sw.comment='';
     });
-    // v6→v7: cameras are a new top-level array per floor.
     if(!Array.isArray(f.CAMS))f.CAMS=[];
     f.CAMS.forEach(cam=>{
       if(!cam.model)cam.model='G4 Pro';
@@ -93,16 +124,12 @@ export function migrateProject(data){
       if(typeof cam.color!=='string')cam.color='';
       if(typeof cam.swId!=='string')cam.swId='';
       if(!cam.resolution)cam.resolution='4K';
+      if(typeof cam.comment!=='string')cam.comment='';
     });
     if(!Array.isArray(f.WALLS))f.WALLS=[];
     f.WALLS.forEach(w=>{
       if(!w.material||!WALL_MATERIALS[w.material])w.material='drywall';
-      // v5→v6: convert absolute pixel walls to fractional. The image dimensions
-      // aren't known here (this module is DOM-free), but the floor knows its
-      // own historical image size if we recorded it. As a safe fallback we
-      // convert against `f.imgW/imgH` if present; otherwise we leave the
-      // legacy x1/y1/x2/y2 in place and let `wallToPx` in geometry.js handle
-      // it for rendering. New walls always go through the fractional path.
+      if(typeof w.comment!=='string')w.comment='';
       if(!Number.isFinite(w.fx1)||!Number.isFinite(w.fy1)||!Number.isFinite(w.fx2)||!Number.isFinite(w.fy2)){
         if(Number.isFinite(w.x1)&&Number.isFinite(w.y1)&&Number.isFinite(w.x2)&&Number.isFinite(w.y2)
           &&Number.isFinite(f.imgW)&&Number.isFinite(f.imgH)&&f.imgW>0&&f.imgH>0){
@@ -112,8 +139,23 @@ export function migrateProject(data){
         }
       }
     });
+    // v7→v8: annotations and survey samples per floor.
+    if(!Array.isArray(f.ANNOS))f.ANNOS=[];
+    f.ANNOS.forEach(a=>{
+      if(typeof a.kind!=='string')a.kind='text';
+      if(typeof a.text!=='string')a.text='';
+      if(typeof a.fx!=='number')a.fx=0.5;
+      if(typeof a.fy!=='number')a.fy=0.5;
+      if(typeof a.fx2!=='number')a.fx2=a.fx;
+      if(typeof a.fy2!=='number')a.fy2=a.fy;
+    });
+    if(!Array.isArray(f.SAMPLES))f.SAMPLES=[];
+    f.SAMPLES.forEach(s=>{
+      if(typeof s.fx!=='number')s.fx=0;
+      if(typeof s.fy!=='number')s.fy=0;
+      if(typeof s.rssi!=='number')s.rssi=-95;
+    });
   });
-  // Drop the legacy project-level scaleM now that each floor carries its own.
   delete data.scaleM;
   data.version=PROJECT_VERSION;
   return [data,warnings];
@@ -125,7 +167,7 @@ export function migrateProject(data){
 export function syncNidFromFloors(floors){
   let maxNum=0;
   for(const f of floors){
-    for(const list of [f.APS,f.DZS,f.SWS,f.WALLS,f.CAMS]){
+    for(const list of [f.APS,f.DZS,f.SWS,f.WALLS,f.CAMS,f.ANNOS,f.SAMPLES]){
       if(!Array.isArray(list))continue;
       for(const item of list){
         if(!item.id)continue;

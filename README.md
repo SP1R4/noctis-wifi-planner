@@ -19,16 +19,18 @@ No backend. No accounts. Projects save to a JSON file you can email.
 
 ---
 
-> ## 🚀 v2.0.0 — Cameras, heatmap, directional antennas, PoE
+> ## 🚀 v3.0.0 — The professional release
 >
-> A meaty release that pushes NOCTIS from "WiFi coverage planner" into
-> "network/security planner". Highlights: real signal-strength heatmap,
-> IP cameras with vendor catalogs, AP antenna patterns, PoE budget,
-> wall vertex editing, multi-select, SVG wall import, shareable URLs,
-> per-floor PDF reports.
+> A physically grounded RF engine (SNR / throughput / capacity,
+> selectable propagation models, regulatory regions, antenna fidelity,
+> floor-to-floor leakage), survey import for predicted-vs-measured
+> validation, a design-review workflow (revisions, diff, comments,
+> annotations), and professional deliverables (BoM / cable-schedule CSV,
+> per-AP install sheets, branded exports). Type-checked, E2E-tested,
+> i18n-ready — and still a zero-dependency static browser app.
 > Pre-built bundle (unzip and open `index.html`, no Node required):
-> **[Download v2.0.0](https://github.com/SP1R4/noctis-wifi-planner/releases/download/v2.0.0/noctis-wifi-planner-v2.0.0.zip)**
-> · [Release notes](https://github.com/SP1R4/noctis-wifi-planner/releases/tag/v2.0.0)
+> **[Download v3.0.0](https://github.com/SP1R4/noctis-wifi-planner/releases/download/v3.0.0/noctis-wifi-planner-v3.0.0.zip)**
+> · [Release notes](https://github.com/SP1R4/noctis-wifi-planner/releases/tag/v3.0.0)
 > · [Changelog](CHANGELOG.md)
 
 ---
@@ -45,17 +47,31 @@ No backend. No accounts. Projects save to a JSON file you can email.
   drywall.
 - **Directional antennas** — omni, ceiling-down, wall-mount, sector
   90 / 60 / 30°. Coverage polygon is masked by the pattern + heading.
-- **Real signal-strength heatmap** — canvas-based per-pixel dBm
-  rendering with banded colours (excellent → unusable). Respects walls,
-  bands, and directional antennas.
+- **Real signal-strength heatmap** — canvas-based per-pixel rendering
+  with banded colours. Switch the heatmap between RSSI, SNR, MCS index,
+  and estimated throughput, and filter it by band (2.4 / 5 / 6 GHz).
+- **Selectable propagation models** — log-distance, ITU-R P.1238 indoor,
+  or COST-231 multi-wall, so the prediction matches the building.
+- **Antenna fidelity** — per-AP antenna gain, cable loss, mount height,
+  and downtilt feed an effective-EIRP calculation.
+- **Regulatory regions** — FCC, ETSI, JP, AU/NZ, IN, BR presets
+  constrain channels, EIRP, and DFS.
+- **Roaming overlap** — highlights where ≥2 APs deliver ≥ -67 dBm so
+  clients can hand off cleanly.
+- **Floor-to-floor leakage** — optionally show neighbouring floors'
+  signal bleeding through the slab.
 - **Channel overlap warnings** — APs sharing or interfering on a 2.4 GHz
   channel get a dashed orange link with a ⚡ Ch X pill.
+- **Auto channel + power planning** — graph-colouring channel assignment
+  and greedy per-AP Tx-power tuning, region-aware.
 - **Auto-AP placement** — greedy "drop N APs to reach 92% coverage"
   optimizer that respects existing APs and walls.
 
 ### Devices on the map
-- **Access points** — Ubiquiti UniFi (WiFi 5 / 6 / 7) and MikroTik
-  (ac / ax) catalogs with per-model PoE draw and typical ranges.
+- **Access points** — UniFi, MikroTik, Aruba/HPE, Cisco Catalyst,
+  Meraki, Ruckus, Cambium, TP-Link Omada, EnGenius, and Extreme
+  catalogs with per-model PoE draw, antenna gain, and typical ranges.
+  Paste your own catalog via the plugin dialog to extend the lists.
 - **IP cameras** — UniFi Protect (G3 / G4 / G5 / AI), Hikvision, Dahua,
   Reolink, and Axis catalogs. Configurable FoV / heading / range; the
   field-of-view cone renders on the map. Press `C` to place.
@@ -71,6 +87,22 @@ No backend. No accounts. Projects save to a JSON file you can email.
   to it; flag over-budget switches in the ⚡ PoE summary modal.
 - **Cable runs** — toggle the **Cables** view to draw lines from
   devices to their switches with length labels (red when > 100 m).
+- **Survey import** — import measured RSSI samples from a CSV; dots are
+  flagged where measured signal deviates materially from predicted.
+- **AP-on-stick mode** — drag a candidate AP and read live coverage /
+  overlap feedback before committing the placement.
+
+### Deliverables
+- **BoM + cable-schedule CSV** — one-click bill of materials and cable
+  schedule for procurement and installers.
+- **Per-AP install sheets** — a printable sheet per AP (location, radio
+  config, switch port, comment) for the field team.
+- **Customer branding** — project logo, company / tagline / footer line,
+  and architect's-scale presets carried into HTML and PDF exports.
+- **Design review** — snapshot revisions and diff any two; per-device
+  comments on every AP, camera, switch, dead zone, and wall.
+- **Annotations** — text labels, arrows, and dimension lines with live
+  metre readouts.
 
 ### Workflow
 - **Multi-floor** — each floor carries its own image, scale (m / 100 px),
@@ -87,6 +119,8 @@ No backend. No accounts. Projects save to a JSON file you can email.
   per-floor maps + tables, and per-AP / per-camera technical details.
 - **Dark mode**, **presentation mode**, **keyboard shortcuts** for every
   tool, **ruler** for arbitrary distance measurements.
+- **i18n-ready** — all UI strings route through a no-dependency `t()`
+  helper; new languages drop in as bundles under `files/src/i18n/`.
 - **Runs from `file://`** after `npm run build` — no server required for
   end users.
 
@@ -120,13 +154,18 @@ so the output works equally well over `http://`, a CDN, or `file://`.
 ## Tests
 
 ```bash
-npm test             # one-shot
+npm test             # vitest unit tests (one-shot)
 npm run test:watch   # vitest watch mode
+npm run typecheck    # tsc --checkJs over the pure modules
+npm run e2e:install  # one-time: fetch the Playwright browser
+npm run e2e          # Playwright end-to-end smoke suite
 ```
 
-57 tests across pure geometry and project-file migration. Adding a feature
-that touches walls, coverage, or schema versions? Drop a test next to the
-existing ones in `tests/`.
+93 unit tests across pure geometry and project-file migration, plus a
+Playwright E2E smoke suite that boots the app. The `files/src/` modules
+are type-checked with `tsc --checkJs` via JSDoc annotations — no `.ts`
+rename. Adding a feature that touches walls, coverage, or schema
+versions? Drop a test next to the existing ones in `tests/`.
 
 ## Project layout
 
@@ -137,16 +176,22 @@ files/
   styles.css         Theming + component styles
   fonts.css          Self-hosted font faces
   src/
-    geometry.js      Pure ray-cast / attenuation / dBm math (DOM-free)
-    migrate.js       Project-file schema migrations (v1 → v7)
+    geometry.js      Pure RF math — ray-cast, attenuation, dBm, SNR,
+                     MCS, throughput, propagation models (DOM-free)
+    migrate.js       Project-file schema migrations (v1 → v8)
     constants.js     AP / camera / switch catalogs + antenna patterns
-                     + PoE draw tables + heatmap colour stops
+                     + PoE tables + heatmap modes + regulatory regions
     imageStore.js    IndexedDB image storage
+    i18n.js          No-dependency t() translation helper
+    i18n/en.js       English string bundle
 tests/
-  geometry.test.js   Geometry + band-loss + directional + dBm tests
+  geometry.test.js   Geometry + band-loss + directional + RF math tests
   migrate.test.js    Schema migration tests (every prior version)
+  e2e/smoke.spec.js  Playwright end-to-end smoke suite
 vite.config.js       Build config (relative paths for file:// portability)
-vitest.config.js     Test config (points at ./tests/)
+vitest.config.js     Unit-test config (points at ./tests/)
+playwright.config.js E2E-test config (tests/e2e/, auto-starts dev server)
+tsconfig.json        checkJs type-check config for files/src/
 scripts/             OS-specific one-line installers (macOS / Ubuntu / Windows)
 ```
 
@@ -169,18 +214,18 @@ DOM-free, and unit-tested.
 
 ## Project file format
 
-Projects save as a single JSON file that includes the floor-plan images
-inline (base64). Schema is versioned; the migrator can read every prior
-version. Current schema is v6 — see `files/src/migrate.js` for the
-version history.
+Projects save as a single JSON file; floor-plan images live in IndexedDB
+and are referenced by id. Schema is versioned; the migrator can read
+every prior version. Current schema is v8 — see `files/src/migrate.js`
+for the version history.
 
 ## Roadmap
 
-- Per-AP custom range table override (today coverage radius is per-model)
-- Wall vertex editing (drag endpoints after placing)
+- Tauri desktop build + optional cloud sync (deferred to v4)
+- Ekahau / NetSpot survey-file import (today: CSV only)
 - True isotropic 5 GHz channel-conflict modelling (today only 2.4 GHz
   channels 1–14 are flagged for adjacency)
-- Multi-language UI (currently English only)
+- Additional UI language bundles (English ships today)
 
 ## Contributing
 

@@ -1123,3 +1123,70 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
 .settings-form .ep-lbl{font-size:10px;font-family:'Share Tech Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-55,rgba(0,0,0,.55))}
 .settings-form .ep-in{padding:7px 9px;font-size:13px;font-family:'Rajdhani',sans-serif;background:var(--bg);color:var(--ink);border:1px solid var(--ink);border-radius:2px}
 .settings-form .ep-hint{margin-top:6px;font-size:10px;font-family:'Share Tech Mono',monospace;color:var(--ink-55,rgba(0,0,0,.55));letter-spacing:.05em;line-height:1.5}
+.settings-heading{
+  margin:14px 0 2px;font-size:10px;font-family:'Share Tech Mono',monospace;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--ink);font-weight:700;
+  padding-bottom:5px;border-bottom:1px solid var(--hair);
+}
+.settings-heading:first-child{margin-top:0}
+
+/* ══ v3 — annotation sub-bar ═══════════════════════════════════ */
+.anno-sub-bar{
+  display:flex;gap:4px;align-items:center;
+  padding:3px;margin-right:4px;
+  background:var(--ink-04);border:1px solid var(--hair);border-radius:var(--r-2);
+}
+
+/* ══ v3 — heatmap mode pills ═══════════════════════════════════ */
+.heat-mode-cluster{display:flex;gap:4px;align-items:center}
+.heat-pill{
+  padding:4px 9px;font-size:9px;font-family:'Share Tech Mono',monospace;
+  letter-spacing:.08em;text-transform:uppercase;
+  background:var(--bg);color:var(--ink-70);
+  border:1px solid var(--ink-12);border-radius:999px;cursor:pointer;
+  transition:background .12s,border-color .12s,color .12s;
+}
+.heat-pill:hover{background:var(--ink-04);border-color:var(--ink-30);color:var(--ink)}
+
+/* ══ v3 — AP-on-stick live readout ════════════════════════════ */
+#ap-stick-readout{
+  position:absolute;top:14px;left:50%;transform:translateX(-50%);
+  display:flex;gap:14px;align-items:center;
+  background:var(--bg);color:var(--ink);
+  padding:8px 14px;border:1px solid var(--ink);border-radius:2px;
+  font-family:'Share Tech Mono',monospace;font-size:10px;
+  letter-spacing:.08em;text-transform:uppercase;z-index:6;
+  box-shadow:var(--shadow-1);
+}
+
+/* ══ v3 — revisions list ══════════════════════════════════════ */
+.rev-list{display:flex;flex-direction:column;gap:6px;min-width:380px;max-height:48vh;overflow-y:auto}
+.rev-row{
+  display:flex;align-items:center;gap:10px;
+  padding:8px 10px;border:1px solid var(--hair);border-radius:var(--r-2);
+  background:var(--bg);
+}
+.rev-row:hover{border-color:var(--ink-30)}
+.rev-name{font-size:13px;font-family:'Rajdhani',sans-serif;font-weight:600;color:var(--ink);flex:1}
+.rev-when{font-size:9px;font-family:'Share Tech Mono',monospace;color:var(--ink-55);letter-spacing:.06em}
+.rev-diff{
+  margin-top:8px;padding:10px;max-height:40vh;overflow:auto;
+  background:var(--ink-04);border:1px solid var(--hair);border-radius:var(--r-2);
+  font-family:'Share Tech Mono',monospace;font-size:11px;line-height:1.55;
+  color:var(--ink-85);white-space:pre-wrap;
+}
+
+/* ══ v3 — SVG overlay layers ══════════════════════════════════ */
+.roaming-fill{fill:rgba(46,125,60,.18);stroke:none;pointer-events:none}
+.anno-text{
+  fill:var(--ink);font-family:'Rajdhani',sans-serif;font-size:14px;font-weight:600;
+  paint-order:stroke;stroke:var(--bg);stroke-width:3px;
+}
+.anno-arrow{color:var(--ink);stroke:var(--ink);stroke-width:2px;fill:none}
+.anno-dim{color:var(--ink-55);stroke:var(--ink-55);stroke-width:1.5px;fill:none;stroke-dasharray:6 4}
+.anno-dim-label{
+  fill:var(--ink);font-family:'Share Tech Mono',monospace;font-size:10px;
+  text-anchor:middle;paint-order:stroke;stroke:var(--bg);stroke-width:3px;
+}
+.anno-arrow.preview,.anno-dim.preview{opacity:.55}
+.sample-dot{cursor:pointer}
