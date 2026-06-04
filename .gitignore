@@ -43,3 +43,6 @@ files/*.json
 files/*.png
 files/*.jpg
 files/*.jpeg
+
+# Portable package output
+build/

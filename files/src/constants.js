@@ -2,7 +2,7 @@
 // regulatory dropdown and the auto channel/Tx-power planner. Kept in their
 // own module so app.js doesn't carry several hundred lines of catalog data.
 
-import {WALL_MATERIALS} from './geometry.js';
+import {WALL_MATERIALS, PROP_EXPONENT} from './geometry.js';
 
 // AP models grouped by manufacturer. Rendered as <optgroup> in the model dropdown.
 export const AP_MODEL_GROUPS=[
@@ -290,7 +290,85 @@ export const SW_POE_BUDGET_W={
   'TL-SG3452XP':500,'TL-SG3452XMP':500,
   'GS308P':83,'GS108Tv3':123,'GS324T':195,'GS750E':380,
   'M4250-26G4XF-PoE+':480,'M4350-24G4XF':550,
+  'Aruba Instant On 1930 24P':195,'Instant On 1960 24P':370,
+  'TL-SG3452XMP':500,'USW-Industrial':450,
 };
+
+// Total access-port count per switch model — used for the over-subscription
+// check (assigned devices vs available ports). Only models we're confident
+// about are listed; swPortCount() returns null for anything else so the check
+// is skipped rather than warning on a guess.
+export const SW_PORTS={
+  // UniFi switches
+  'USW-Flex-Mini':5,'USW-Flex':5,'USW-Flex-Utility':5,
+  'USW-Lite-8-PoE':8,'USW-Lite-16-PoE':16,
+  'USW-16':16,'USW-16-PoE':16,'USW-24':24,'USW-24-PoE':24,'USW-48':48,'USW-48-PoE':48,
+  'USW-Pro-8-PoE':8,'USW-Pro-24':24,'USW-Pro-24-PoE':24,'USW-Pro-48':48,'USW-Pro-48-PoE':48,
+  'USW-Pro-Max-16':16,'USW-Pro-Max-24':24,'USW-Pro-Max-48':48,
+  'USW-Pro-Max-24-PoE':24,'USW-Pro-Max-48-PoE':48,
+  'USW-EnterpriseXG-24':24,'USW-Enterprise-8-PoE':8,'USW-Enterprise-24-PoE':24,'USW-Enterprise-48-PoE':48,
+  'USW-Aggregation':8,'USW-Pro-Aggregation':28,'USW-Industrial':10,
+  // UniFi gateways (LAN ports)
+  'UDM':4,'UDM-Pro':8,'UDM-SE':8,'UDM-Pro-Max':8,
+  // MikroTik
+  'CSS326-24G-2S+RM':24,'CSS610-8G-2S+IN':8,'CSS318-16G-2S+IN':16,'CSS318-16P-4S+RM':16,
+  'CRS305-1G-4S+IN':4,'CRS309-1G-8S+IN':8,'CRS310-8G+2S+IN':8,'CRS312-4C+8XG-RM':8,
+  'CRS317-1G-16S+RM':16,'CRS318-16P-2S+OUT':16,'CRS326-24G-2S+RM':24,'CRS326-24G-2S+IN':24,
+  'CRS328-24P-4S+RM':24,'CRS354-48G-4S+2Q+RM':48,'CRS354-48P-4S+2Q+RM':48,
+  // Aruba / HPE
+  'Aruba 2530-8G-PoE':8,'Aruba 2540-24G-PoE':24,'Aruba 2930F-24G-PoE':24,
+  'Aruba 2930M-24G-PoE':24,'Aruba 6100-24G-PoE':24,'Aruba 6200F-24G-PoE':24,'Aruba 6300M-24G-PoE':24,
+  'Aruba Instant On 1930 24P':24,'Instant On 1960 24P':24,
+  // Cisco
+  'C1000-24P':24,'C1300-24P':24,'C9200-24P':24,'C9200L-24P-4G':24,
+  'C9300-24P':24,'C9300X-24Y':24,'C9300L-24P':24,
+  'Meraki MS125-24P':24,'Meraki MS225-24P':24,'Meraki MS250-48FP':48,'Meraki MS355-24X':24,
+  // TP-Link Omada
+  'TL-SG2008P':8,'TL-SG2210MP':10,'TL-SG3210XHP-M2':8,'TL-SG3428MP':24,
+  'TL-SG3452XP':48,'TL-SG3452XMP':48,
+  // Netgear
+  'GS308P':8,'GS108Tv3':8,'GS324T':24,'GS750E':48,
+  'M4250-26G4XF-PoE+':24,'M4350-24G4XF':24,
+};
+// Access ports for a model; null when unknown (skip the check). UniFi USW-*
+// names end in their port count, so we parse those as a fallback.
+export function swPortCount(model){
+  if(!model)return null;
+  if(model in SW_PORTS)return SW_PORTS[model];
+  const m=/^USW\b.*?(\d+)(?:-PoE)?$/i.exec(model);
+  return m?parseInt(m[1],10):null;
+}
+
+// Highest PoE standard a switch delivers per port:
+//   af = 802.3af (≤15.4 W) · at = 802.3at/PoE+ (≤30 W) · bt = 802.3bt (≤90 W)
+// Only exceptions are listed; swPoeClass() defaults any PoE-capable switch to
+// 'at', which fits the large majority of access switches.
+export const SW_POE_CLASS={
+  'USW-Pro-24-PoE':'bt','USW-Pro-48-PoE':'bt',
+  'USW-Pro-Max-24-PoE':'bt','USW-Pro-Max-48-PoE':'bt',
+  'USW-Enterprise-8-PoE':'bt','USW-Enterprise-24-PoE':'bt','USW-Enterprise-48-PoE':'bt',
+  'USW-Industrial':'bt',
+  'Aruba 6300M-24G-PoE':'bt',
+  'C9300-24P':'bt','C9300X-24Y':'bt','C9300L-24P':'bt',
+  'Meraki MS250-48FP':'bt','Meraki MS355-24X':'bt',
+  'TL-SG3210XHP-M2':'bt','TL-SG3428MP':'bt','TL-SG3452XMP':'bt',
+  'M4250-26G4XF-PoE+':'bt','M4350-24G4XF':'bt',
+};
+export const POE_CLASS_RANK={af:1,at:2,bt:3};
+// Lowest PoE standard that can supply a given wattage (null for no draw).
+export function poeClassForWatts(w){
+  if(!w||w<=0)return null;
+  if(w<=15.4)return 'af';
+  if(w<=30)return 'at';
+  return 'bt';
+}
+// What a switch model can deliver per port; null = no PoE. `budget` lets a
+// custom model with a user-set PoE budget still count as PoE-capable.
+export function swPoeClass(model,budget){
+  if(model && model in SW_POE_CLASS)return SW_POE_CLASS[model];
+  if((budget||SW_POE_BUDGET_W[model]||0)>0)return 'at';
+  return null;
+}
 
 export const WALL_MATERIAL_KEYS=Object.keys(WALL_MATERIALS);
 
@@ -603,10 +681,12 @@ export const DEFAULT_REGULATORY_REGION='FCC-US';
 //   logd        — log-distance, the v1/v2 model (25 dB across the AP radius).
 //   itu-indoor  — ITU P.1238 indoor model with floor penalty handled separately.
 //   multi-wall  — COST-231-style, distance-only term identical to itu-indoor.
+// Exponents come from geometry.js (PROP_EXPONENT) — single source of truth so
+// the UI and the RF math never drift.
 export const PROPAGATION_MODELS={
-  'logd':       {label:'Log-distance (default)', exponent:25},
-  'itu-indoor': {label:'ITU-R P.1238 (indoor)',  exponent:30},
-  'multi-wall': {label:'COST-231 multi-wall',    exponent:32},
+  'logd':       {label:'Log-distance (default)', exponent:PROP_EXPONENT['logd']},
+  'itu-indoor': {label:'ITU-R P.1238 (indoor)',  exponent:PROP_EXPONENT['itu-indoor']},
+  'multi-wall': {label:'COST-231 multi-wall',    exponent:PROP_EXPONENT['multi-wall']},
 };
 export const PROPAGATION_MODEL_KEYS=Object.keys(PROPAGATION_MODELS);
 export const DEFAULT_PROPAGATION_MODEL='logd';
@@ -642,3 +722,57 @@ export const ARCH_SCALE_PRESETS=[
   {label:'1:500', m100px:12.7},
   {label:'1:1000',m100px:25.4},
 ];
+
+// Per-model product image paths, keyed by the exact catalog model name. Images
+// are bundled locally (downloaded by scripts/fetch-device-images.mjs into
+// files/public/devices/, which Vite copies into dist/) so previews work offline
+// with no runtime CDN dependency. Side-panel preview resolves:
+//   device.imageUrl (per-device override) -> MODEL_IMAGES[model] -> category placeholder.
+// Re-run the script to add or refresh models.
+import {MODEL_IMAGES} from './deviceImages.js';
+export {MODEL_IMAGES};
+
+// Build a neutral inline-SVG data URI from a glyph body + caption. Inline so it
+// always renders, even from file:// and offline. Styled to read on the cream
+// NOCTIS canvas (same palette as the empty-state UI).
+function _phSvg(inner,label){
+  return 'data:image/svg+xml;utf8,'+encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90" viewBox="0 0 160 90">`
+    +`<rect width="160" height="90" fill="#e9e4d8"/>`
+    +`<g fill="none" stroke="#b8b0a0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</g>`
+    +`<text x="80" y="83" font-family="sans-serif" font-size="9" fill="#8a8270" text-anchor="middle">${label}</text></svg>`);
+}
+
+// Per-category placeholders, picked when a model has no mapped/override image.
+// A type-specific silhouette reads as intentional, unlike a generic box.
+export const MODEL_IMAGE_PLACEHOLDERS={
+  // Access point: ceiling-dome dot with radiating signal arcs.
+  ap:  _phSvg(`<circle cx="80" cy="44" r="3.5" fill="#b8b0a0" stroke="none"/>`
+    +`<path d="M64 44a16 16 0 0 1 32 0"/><path d="M55 44a25 25 0 0 1 50 0"/>`,'access point'),
+  // Camera: bullet body + lens + mount arm.
+  cam: _phSvg(`<rect x="50" y="32" width="48" height="24" rx="5"/>`
+    +`<circle cx="68" cy="44" r="8"/><line x1="98" y1="44" x2="112" y2="44"/>`
+    +`<line x1="112" y1="38" x2="112" y2="50"/>`,'camera'),
+  // Switch: 1U chassis with a row of ports.
+  sw:  _phSvg(`<rect x="38" y="34" width="84" height="22" rx="2"/>`
+    +`<path d="M48 52v-6M57 52v-6M66 52v-6M75 52v-6M84 52v-6M93 52v-6M102 52v-6M111 52v-6"/>`,'switch'),
+  // Generic fallback for anything without a category.
+  default: _phSvg(`<rect x="34" y="22" width="92" height="46" rx="4"/><circle cx="80" cy="45" r="11"/>`,'no image'),
+};
+
+// Back-compat: the original single-placeholder export now points at the generic
+// fallback. Existing callers keep working; type-aware callers pass a `type`.
+export const MODEL_IMAGE_PLACEHOLDER=MODEL_IMAGE_PLACEHOLDERS.default;
+
+/**
+ * Resolve a device's preview image URL.
+ * @param {{imageUrl?:string, model?:string}} item
+ * @param {('ap'|'cam'|'sw')=} type  Device category, for the fallback silhouette.
+ * @returns {string} A usable <img src> (override, mapped, or category placeholder).
+ */
+export function modelImageUrl(item,type){
+  if(item&&typeof item.imageUrl==='string'&&item.imageUrl.trim())return item.imageUrl.trim();
+  const mapped=item&&item.model&&MODEL_IMAGES[item.model];
+  if(mapped)return mapped;
+  return MODEL_IMAGE_PLACEHOLDERS[type]||MODEL_IMAGE_PLACEHOLDERS.default;
+}

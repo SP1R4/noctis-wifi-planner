@@ -30,6 +30,12 @@ export const DEFAULT_SETTINGS={
   logoDataUrl:      '',               // brand logo for report cover
   footerLine:       '',               // custom footer line in HTML/PDF exports
   language:         'en',             // i18n locale code
+  // v9 additions
+  cableRoutingFactor: 1.3,            // multiply straight-line runs to estimate real cabling
+  cableBoxM:        305,              // metres per cable box (for BoM box count)
+  expectedClients:  0,                // expected concurrent clients (0 = no capacity check)
+  colorByVlan:      false,            // tint devices on the map by their VLAN colour
+  vlans:            [],               // [{id,name,color,subnet}] VLAN registry
 };
 
 const DEFAULT_FLOOR_SCALE_M=100;
@@ -62,7 +68,9 @@ export function migrateProject(data){
     for(const k of Object.keys(DEFAULT_SETTINGS)){
       const got=data.settings[k];
       const def=DEFAULT_SETTINGS[k];
-      if(typeof def==='number'){
+      if(Array.isArray(def)){
+        if(Array.isArray(got))s[k]=got;
+      }else if(typeof def==='number'){
         if(typeof got==='number'&&Number.isFinite(got))s[k]=got;
       }else if(typeof def==='boolean'){
         if(typeof got==='boolean')s[k]=got;
@@ -74,6 +82,8 @@ export function migrateProject(data){
   }else{
     data.settings={...DEFAULT_SETTINGS};
   }
+  // Clone the VLAN registry so it never aliases the shared DEFAULT_SETTINGS array.
+  data.settings.vlans=Array.isArray(data.settings.vlans)?data.settings.vlans.map(v=>({...v})):[];
   if(!Array.isArray(data.revisions))data.revisions=[];
   // Project-level scaleM is the legacy default (pre-v6). New projects use
   // per-floor scaleM; old projects propagate the project-level value down.
@@ -113,6 +123,8 @@ export function migrateProject(data){
       if(typeof sw.size!=='number'||sw.size<=0)sw.size=22;
       if(typeof sw.poeBudget!=='number')sw.poeBudget=0;
       if(typeof sw.comment!=='string')sw.comment='';
+      if(typeof sw.ports!=='number')sw.ports=0;        // 0 = derive from model
+      if(typeof sw.uplinkId!=='string')sw.uplinkId='';
     });
     if(!Array.isArray(f.CAMS))f.CAMS=[];
     f.CAMS.forEach(cam=>{

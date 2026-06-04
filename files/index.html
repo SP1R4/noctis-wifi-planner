@@ -90,6 +90,10 @@
       <span class="toggle-lbl">Roaming</span>
       <span class="toggle-switch" aria-hidden="true"></span>
     </button>
+    <button class="toggle" id="btn-vlan" data-action="toggle-vlan-colors" title="Colour devices by VLAN">
+      <span class="toggle-lbl">VLAN colors</span>
+      <span class="toggle-switch" aria-hidden="true"></span>
+    </button>
     <div class="heat-mode-cluster" role="group" aria-label="Heatmap display">
       <button class="heat-pill" data-action="cycle-heatmap-mode" id="heat-mode-pill" title="Cycle heatmap metric" aria-label="Cycle heatmap metric">RSSI (dBm)</button>
       <button class="heat-pill" data-action="cycle-heatmap-band" id="heat-band-pill" title="Cycle heatmap band filter" aria-label="Cycle heatmap band filter">All</button>
@@ -99,6 +103,9 @@
     <button class="btn" data-action="auto-channel" title="Auto-assign channels (graph coloring)">⌁ Auto-channel</button>
     <button class="btn" data-action="auto-power" title="Auto-tune per-AP Tx power">⌁ Auto-power</button>
     <button class="btn" data-action="show-poe" title="PoE budget summary">⚡ PoE</button>
+    <button class="btn" data-action="auto-assign-sw" title="Assign APs/cameras to nearest switch">⚯ Auto-cable</button>
+    <button class="btn" data-action="show-topology" title="Switch uplink tree & port usage">⊟ Topology</button>
+    <button class="btn" data-action="show-validation" title="Validate network wiring & PoE">✓ Validate</button>
 
     <div class="topbar-spacer"></div>
 
@@ -183,6 +190,7 @@
         <div class="leg-i" id="leg-ol" style="display:none"><div class="leg-ol"></div>Overlap</div>
         <div class="leg-i">⚠ Dead Zone</div>
         <div class="leg-i">⊞ Switch</div>
+        <span class="leg-vlans" id="leg-vlans"></span>
         <span class="leg-brand">NOCTIS</span>
       </div>
       <div id="scale-bar" style="display:none">

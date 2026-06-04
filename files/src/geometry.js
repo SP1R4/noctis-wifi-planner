@@ -61,7 +61,10 @@ export function bandLossMultiplier(freq){
 // Propagation-model path-loss "exponent" in dB across one AP radius. Bigger
 // values = signal decays faster with distance. Mirrors `PROPAGATION_MODELS`
 // in constants.js but is kept here too so geometry.js stays DOM-/UI-free.
-const PROP_EXPONENT={
+// Per-radius path-loss "exponent" (dB across one AP radius) per propagation
+// model. Single source of truth — constants.js's PROPAGATION_MODELS imports
+// these so the UI labels and the math can't drift apart.
+export const PROP_EXPONENT={
   'logd':       25,
   'itu-indoor': 30,
   'multi-wall': 32,

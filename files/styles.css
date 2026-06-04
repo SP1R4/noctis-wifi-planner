@@ -402,6 +402,40 @@ html,body{
   margin:18px 0 10px;padding-bottom:7px;border-bottom:1px solid var(--hair);
 }
 .ep-section:first-child{margin-top:0}
+/* Device product-image preview at the top of the AP / camera / switch panel */
+.ep-device-img{
+  position:relative;
+  margin:0 0 12px;
+  border:1px solid var(--ink-20);border-radius:var(--r-1);
+  background:var(--bg);
+  overflow:hidden;
+  display:flex;align-items:center;justify-content:center;
+  aspect-ratio:16 / 9;
+  transition:border-color var(--t-fast) var(--ease),box-shadow var(--t-fast) var(--ease);
+}
+/* Drag an image file over the preview to set the device photo. */
+.ep-device-img.drag-over{
+  border-color:var(--ink);
+  border-style:dashed;
+  box-shadow:inset 0 0 0 3px var(--bg),inset 0 0 0 4px var(--ink-20);
+}
+.ep-device-img.drag-over::after{
+  content:'Drop image to set photo';
+  position:absolute;inset:0;
+  display:flex;align-items:center;justify-content:center;
+  font:600 11px/1 'Rajdhani',sans-serif;letter-spacing:.02em;
+  color:var(--ink);background:color-mix(in srgb,var(--bg) 78%,transparent);
+}
+.ep-device-img.drag-over img{pointer-events:none}
+.ep-device-img img{
+  max-width:100%;max-height:100%;
+  width:auto;height:auto;
+  object-fit:contain;
+  display:block;
+}
+.ep-img-actions{display:flex;gap:6px;margin:0 0 12px}
+.ep-img-btn{flex:1;padding:6px 8px;font-size:11px;white-space:nowrap}
+.ep-img-btn[disabled]{opacity:.4;cursor:default;pointer-events:none}
 .ep-row{margin-bottom:12px}
 .ep-lbl{
   display:block;margin-bottom:5px;
@@ -888,6 +922,12 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
   pointer-events:none;
 }
 .cable-lbl-warn{fill:#c0382b}
+.cable-lbl-near{fill:#b8860b}
+/* Switch → switch/gateway uplink trunks: solid and heavier than device runs. */
+.uplink-line{
+  stroke:#6a1b9a;stroke-width:2.6;opacity:.75;
+  fill:none;pointer-events:none;
+}
 
 /* Wall vertex handles — drawn on each endpoint of the selected wall so the
    user can drag them to reshape after placement. */
