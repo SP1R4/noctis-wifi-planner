@@ -1052,6 +1052,7 @@ async function tryLoadFromHash(){
     const [data,warnings]=migrateProject(raw);
     FLOORS=data.floors;
     SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
+    applyStoredCatalog();
     curFloor=0;selId=null;selType=null;
     syncScaleFromFloor();syncNidFromFloors();
     await _rehydrateImages();
@@ -1239,6 +1240,7 @@ function loadProject(input){
       const [data,warnings]=migrateProject(raw);
       FLOORS=data.floors;
       SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
+      applyStoredCatalog();
       PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
       // Apply the persisted UI language (i18n bundle) right away.
       if(SETTINGS.language)setLang(SETTINGS.language);
@@ -3127,46 +3129,66 @@ function showRevisions(){
 
 // ═══ PLUGIN API (vendor catalog merging) ══════════
 // A user can paste a JSON dictionary that adds APs/cams/switches to the
-// catalogs without rebuilding. Stored on the project (so the entries persist)
-// and merged at load time.
+// catalogs without rebuilding. The accumulated catalog is persisted on the
+// project (SETTINGS.customCatalog) and re-applied at load via applyStoredCatalog.
+// Model-level dedup keeps re-applies (reload / loading several projects) from
+// piling duplicate entries into the dropdowns.
 function _mergeCustomCatalog(catalog){
   if(!catalog||typeof catalog!=='object')return false;
   // Catalog shape:
   // { aps: [{label:'My Vendor', models:['X1','X2'], range:{X1:30}, poe:{X1:15}, gain:{X1:5}}],
   //   cams: [{label:'My CCTV', models:['CamA'], specs:{CamA:{fov:90,range:30,res:'4K',poeW:8}}}],
-  //   switches: [{label:'My SW', models:['SW1']}] }
+  //   switches: [{label:'My SW', models:['SW1'], ports:{SW1:24}, poe:{SW1:380}, class:{SW1:'bt'}}] }
   let added=0;
   for(const g of (catalog.aps||[])){
     if(!g.label||!Array.isArray(g.models))continue;
-    AP_MODEL_GROUPS.push({label:g.label,models:g.models.slice()});
-    for(const m of g.models)MODELS.push(m);
     for(const m of g.models){
       if(g.range&&Number.isFinite(g.range[m]))AP_RANGE_M[m]=g.range[m];
       if(g.poe&&Number.isFinite(g.poe[m]))AP_POE_W[m]=g.poe[m];
       if(g.gain&&Number.isFinite(g.gain[m]))AP_ANTENNA_GAIN_DBI[m]=g.gain[m];
-      added++;
     }
+    const fresh=g.models.filter(m=>!MODELS.includes(m));
+    if(fresh.length){AP_MODEL_GROUPS.push({label:g.label,models:fresh});for(const m of fresh)MODELS.push(m);added+=fresh.length;}
   }
   for(const g of (catalog.cams||[])){
     if(!g.label||!Array.isArray(g.models))continue;
-    CAM_MODEL_GROUPS.push({label:g.label,models:g.models.slice()});
-    for(const m of g.models)CAM_MODELS.push(m);
     if(g.specs)for(const k of Object.keys(g.specs))CAM_SPECS[k]=g.specs[k];
-    added+=g.models.length;
+    const fresh=g.models.filter(m=>!CAM_MODELS.includes(m));
+    if(fresh.length){CAM_MODEL_GROUPS.push({label:g.label,models:fresh});for(const m of fresh)CAM_MODELS.push(m);added+=fresh.length;}
   }
   for(const g of (catalog.switches||[])){
     if(!g.label||!Array.isArray(g.models))continue;
-    SW_MODEL_GROUPS.push({label:g.label,models:g.models.slice()});
-    for(const m of g.models)SW_MODELS.push(m);
-    added+=g.models.length;
+    for(const m of g.models){
+      if(g.ports&&Number.isFinite(g.ports[m]))SW_PORTS[m]=g.ports[m];
+      if(g.poe&&Number.isFinite(g.poe[m]))SW_POE_BUDGET_W[m]=g.poe[m];
+      if(g.class&&typeof g.class[m]==='string')SW_POE_CLASS[m]=g.class[m];
+    }
+    const fresh=g.models.filter(m=>!SW_MODELS.includes(m));
+    if(fresh.length){SW_MODEL_GROUPS.push({label:g.label,models:fresh});for(const m of fresh)SW_MODELS.push(m);added+=fresh.length;}
   }
   return added>0;
+}
+// Append a freshly-merged catalog onto the persisted accumulation so it
+// survives reloads / save+load (re-applied by applyStoredCatalog).
+function _accumulateCatalog(json){
+  let store={aps:[],cams:[],switches:[]};
+  if(SETTINGS.customCatalog){try{const p=JSON.parse(SETTINGS.customCatalog)||{};store={aps:p.aps||[],cams:p.cams||[],switches:p.switches||[]};}catch{}}
+  for(const k of ['aps','cams','switches'])if(Array.isArray(json[k]))store[k]=store[k].concat(json[k]);
+  SETTINGS.customCatalog=JSON.stringify(store);
+}
+// Re-merge the project's persisted custom catalog into the live dropdowns.
+// Safe to call repeatedly — _mergeCustomCatalog dedups by model name.
+function applyStoredCatalog(){
+  if(!SETTINGS.customCatalog)return;
+  try{_mergeCustomCatalog(JSON.parse(SETTINGS.customCatalog));}catch{}
 }
 function showPluginCatalogDialog(){
   const wrap=document.createElement('div');wrap.className='settings-form';
   const hint=document.createElement('div');hint.className='ep-hint';
-  hint.innerHTML=`Paste a JSON catalog to add custom vendor models. Schema:<br>
-<code style="font-size:11px;font-family:monospace;background:rgba(0,0,0,.05);padding:8px;display:block;white-space:pre;margin-top:6px">{"aps":[{"label":"My Vendor","models":["X1"],"range":{"X1":30},"poe":{"X1":15}}],"cams":[],"switches":[]}</code>`;
+  hint.innerHTML=`Paste a JSON catalog to add custom vendor models. Saved with the project. Schema:<br>
+<code style="font-size:11px;font-family:monospace;background:rgba(0,0,0,.05);padding:8px;display:block;white-space:pre;margin-top:6px">{"aps":[{"label":"My Vendor","models":["X1"],"range":{"X1":30},"poe":{"X1":15}}],
+ "cams":[{"label":"My CCTV","models":["CamA"],"specs":{"CamA":{"fov":90,"range":30,"res":"4K","poeW":8}}}],
+ "switches":[{"label":"My SW","models":["SW1"],"ports":{"SW1":24},"poe":{"SW1":380},"class":{"SW1":"bt"}}]}</code>`;
   wrap.appendChild(hint);
   const ta=document.createElement('textarea');
   ta.style.width='100%';ta.style.height='180px';ta.style.fontFamily='monospace';ta.style.fontSize='12px';
@@ -3175,8 +3197,12 @@ function showPluginCatalogDialog(){
   showModalNode('Custom vendor catalog',wrap,()=>{
     try{
       const json=JSON.parse(ta.value||'{}');
-      if(_mergeCustomCatalog(json))toast('Catalog merged');
-      else toast('Nothing to merge');
+      if(_mergeCustomCatalog(json)){
+        _accumulateCatalog(json);
+        autosave();
+        renderRP();   // refresh an open device panel so new models show in dropdowns
+        toast('Catalog merged & saved');
+      }else toast('Nothing to merge');
     }catch(err){
       toast('Invalid JSON: '+(err&&err.message||err));
     }
@@ -4587,6 +4613,7 @@ function tryRestoreAutosave(){
         const [migrated]=migrateProject(data);
         FLOORS=migrated.floors;
         SETTINGS={...DEFAULT_SETTINGS,...(migrated.settings||{})};
+        applyStoredCatalog();
         PROJECT_REVISIONS=Array.isArray(migrated.revisions)?migrated.revisions:[];
         if(SETTINGS.language)setLang(SETTINGS.language);
         curFloor=0;selId=null;selType=null;

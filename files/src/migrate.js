@@ -36,6 +36,7 @@ export const DEFAULT_SETTINGS={
   expectedClients:  0,                // expected concurrent clients (0 = no capacity check)
   colorByVlan:      false,            // tint devices on the map by their VLAN colour
   vlans:            [],               // [{id,name,color,subnet}] VLAN registry
+  customCatalog:    '',               // JSON string of merged custom vendor models
 };
 
 const DEFAULT_FLOOR_SCALE_M=100;
