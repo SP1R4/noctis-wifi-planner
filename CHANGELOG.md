@@ -6,6 +6,31 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.2.0] — 2026-06-05
+
+Quality-of-life and distribution release.
+
+### Added
+- **PDF floor-plan import.** Upload a `.pdf` and its first page is rendered to
+  a crisp image — no more exporting plans to PNG first. (Worker bundled inline
+  so the portable build still runs fully offline.)
+- **Scale by known dimension.** "⇲ Calibrate": draw a line over a known length
+  on the plan, type its real-world distance, and the m/100px scale is derived.
+- **Credential encryption.** An optional project passphrase (Settings →
+  Security) AES-256-GCM-encrypts device credentials in saved project files and
+  keeps them out of autosave and Share links; loading prompts to unlock.
+
+### Changed
+- **macOS app is now a universal binary** (Intel + Apple Silicon).
+- **Auto-update** (Windows/Linux) via GitHub Releases; the release also ships
+  the portable browser zip and update metadata.
+- **Hardened desktop build**: navigation guard, Content-Security-Policy, and the
+  (file://-only) Share button hidden in the app.
+
+### Internal
+- Pure network logic extracted to `files/src/network.js` with unit tests; added
+  `npm run verify` and a pre-push hook mirroring CI.
+
 ## [3.1.0] — 2026-06-05
 
 The "network + desktop" release. Switches/routers become first-class

@@ -1,6 +1,6 @@
 {
   "name": "noctis-wifi-planner",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "Professional WiFi + IP camera site-planner that runs in the browser. Wall-aware ray-cast coverage, SNR/throughput/MCS heatmaps, auto channel and Tx-power planning, regulatory regions + DFS, floor-to-floor RF leakage, survey CSV import, multi-floor PDF + BoM/cable-schedule exports.",
   "private": false,
   "type": "module",
