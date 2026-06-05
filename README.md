@@ -1,38 +1,32 @@
-# Plexus
+<h1 align="center">Plexus</h1>
+<p align="center"><em>Network Site Planner — predictive WiFi, IP-camera and switch/PoE planning that runs anywhere.</em></p>
 
-[![Release](https://img.shields.io/github/v/release/SP1R4/plexus-network-planner?color=black&label=release)](https://github.com/SP1R4/plexus-network-planner/releases/latest)
-[![CI](https://github.com/SP1R4/plexus-network-planner/actions/workflows/ci.yml/badge.svg)](https://github.com/SP1R4/plexus-network-planner/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
-[![Vite](https://img.shields.io/badge/built%20with-vite-646cff.svg)](https://vitejs.dev/)
-[![Vanilla JS](https://img.shields.io/badge/no%20framework-vanilla%20JS-f7df1e.svg)](#)
+<p align="center">
+<a href="https://github.com/SP1R4/plexus-network-planner/releases/latest"><img src="https://img.shields.io/github/v/release/SP1R4/plexus-network-planner?color=black&label=release" alt="Release"></a>
+<a href="https://github.com/SP1R4/plexus-network-planner/actions/workflows/ci.yml"><img src="https://github.com/SP1R4/plexus-network-planner/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+<img src="https://img.shields.io/badge/desktop-mac%20%7C%20win%20%7C%20linux-black" alt="Desktop">
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-black.svg" alt="License: MIT"></a>
+<img src="https://img.shields.io/badge/no%20framework-vanilla%20JS-f7df1e.svg" alt="Vanilla JS">
+</p>
 
-A single-page network planner that runs entirely in the browser. Drop a
-floor-plan image, place access points and IP cameras, draw walls in
-different materials, link devices to PoE switches, and watch wall-aware
-coverage polygons + a real signal-strength heatmap fall out of a ray-cast
-simulation in real time. Multi-floor, multi-select, undo/redo,
-band-aware (2.4 / 5 / 6 GHz), directional antennas, PoE budget +
-cable-run visualization, and exports a per-floor PDF report when the
-survey is done.
+<p align="center"><img src="docs/screenshot.png" alt="Plexus — wall-aware WiFi coverage over a floor plan" width="860"></p>
 
-No backend. No accounts. Projects save to a JSON file you can email.
+Plexus is a **network site planner** that runs entirely in the browser or as a
+native desktop app. Drop a floor plan, place access points, IP cameras and
+switches, draw walls in different materials, and watch **wall-aware coverage
+polygons + a real signal-strength heatmap** fall out of a ray-cast simulation in
+real time — then design the wiring (PoE budgets, port maps, topology, cabling)
+and hand off branded PDF / BoM / cable-schedule deliverables.
 
----
+Predictive RF (SNR / throughput / MCS, selectable propagation models, regulatory
+regions), multi-floor, band-aware (2.4 / 5 / 6 GHz), directional antennas, survey
+import for predicted-vs-measured validation. **No backend. No accounts.** Projects
+save to a JSON file you can email.
 
-> ## 🚀 v3.0.0 — The professional release
->
-> A physically grounded RF engine (SNR / throughput / capacity,
-> selectable propagation models, regulatory regions, antenna fidelity,
-> floor-to-floor leakage), survey import for predicted-vs-measured
-> validation, a design-review workflow (revisions, diff, comments,
-> annotations), and professional deliverables (BoM / cable-schedule CSV,
-> per-AP install sheets, branded exports). Type-checked, E2E-tested,
-> i18n-ready — and still a zero-dependency static browser app.
->
 > **Download — [latest release](https://github.com/SP1R4/plexus-network-planner/releases/latest):**
 > desktop installers for **macOS** (`.dmg`), **Windows** (`.exe`) and **Linux**
-> (`.AppImage`/`.deb`), or the **portable browser zip** (unzip and open
-> `index.html`, no install). · [Changelog](CHANGELOG.md)
+> (`.AppImage` / `.deb`), or the **portable browser zip** (unzip and open
+> `index.html` — no install, fully offline). · [Changelog](CHANGELOG.md)
 
 ---
 
