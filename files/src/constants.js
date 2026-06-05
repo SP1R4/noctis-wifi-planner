@@ -291,7 +291,7 @@ export const SW_POE_BUDGET_W={
   'GS308P':83,'GS108Tv3':123,'GS324T':195,'GS750E':380,
   'M4250-26G4XF-PoE+':480,'M4350-24G4XF':550,
   'Aruba Instant On 1930 24P':195,'Instant On 1960 24P':370,
-  'TL-SG3452XMP':500,'USW-Industrial':450,
+  'USW-Industrial':450,
 };
 
 // Total access-port count per switch model — used for the over-subscription
