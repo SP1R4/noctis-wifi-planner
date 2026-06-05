@@ -1,0 +1,68 @@
+name: Release desktop apps
+
+# Build native installers for macOS, Windows and Linux and attach them to a
+# GitHub Release whenever a version tag (e.g. v3.1.0) is pushed.
+#
+#   git tag v3.1.0 && git push origin v3.1.0
+#
+# Apps are unsigned — see README for the Gatekeeper / SmartScreen bypass.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}   # allow manual runs (uploads as a draft for the latest tag)
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifacts: |
+              release/*.dmg
+              release/*.zip
+          - os: windows-latest
+            artifacts: |
+              release/*.exe
+          - os: ubuntu-latest
+            artifacts: |
+              release/*.AppImage
+              release/*.deb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build installers
+        run: npm run app:build
+        env:
+          # Unsigned builds — don't let electron-builder hunt for certificates.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attach installers to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifacts }}
+          fail_on_unmatched_files: false
+
+      - name: Upload build artifacts (non-tag runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: ignore

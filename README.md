@@ -151,6 +151,47 @@ npm run build        # → dist/ (open dist/index.html directly, no server neede
 The production build uses relative paths (`base: './'` in `vite.config.js`)
 so the output works equally well over `http://`, a CDN, or `file://`.
 
+## Desktop app (macOS / Windows / Linux)
+
+Native installers wrap the same web build in an Electron window. Grab the
+installer for your OS from the [Releases](https://github.com/SP1R4/noctis-wifi-planner/releases)
+page:
+
+| OS      | File                    |
+|---------|-------------------------|
+| macOS   | `.dmg` (or `.zip`)      |
+| Windows | `.exe` (NSIS installer) |
+| Linux   | `.AppImage` or `.deb`   |
+
+Installers are produced by a GitHub Actions matrix (`.github/workflows/release.yml`)
+on every `v*` tag — one runner per OS, since each native package must be built
+on its own platform.
+
+### Build it yourself
+
+```bash
+npm install
+npm run app:dev      # launch the desktop app against the current build
+npm run app:build    # → release/  (installer for the OS you're on)
+```
+
+> `app:build` only produces the **current** platform's installer — macOS makes
+> the `.dmg`/`.zip`, Windows the `.exe`, Linux the `.AppImage`/`.deb`. Use the
+> CI workflow (push a tag) to get all three at once.
+
+App icons live in `electron/resources/` and are regenerated with
+`npm run make:icons` (macOS only — uses `sips`/`iconutil`).
+
+### Unsigned builds — first-launch bypass
+
+The apps are **not code-signed** (that needs paid Apple/Windows certificates),
+so the OS will warn on first launch. This is expected:
+
+- **macOS** — right-click the app → **Open** → **Open** (once). Or, if
+  Gatekeeper still blocks it: `xattr -dr com.apple.quarantine "/Applications/NOCTIS WiFi Planner.app"`.
+- **Windows** — on the SmartScreen prompt, click **More info** → **Run anyway**.
+- **Linux** — `chmod +x` the `.AppImage` and run it.
+
 ## Tests
 
 ```bash

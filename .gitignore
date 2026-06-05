@@ -46,3 +46,6 @@ files/*.jpeg
 
 # Portable package output
 build/
+
+# Electron-builder output (installers)
+release/

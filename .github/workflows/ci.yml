@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+# These jobs never launch Electron — skip its ~100 MB binary download on install.
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
 jobs:
   test:
     name: Test on Node ${{ matrix.node }}

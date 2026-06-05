@@ -4,6 +4,7 @@
   "description": "Professional WiFi + IP camera site-planner that runs in the browser. Wall-aware ray-cast coverage, SNR/throughput/MCS heatmaps, auto channel and Tx-power planning, regulatory regions + DFS, floor-to-floor RF leakage, survey CSV import, multi-floor PDF + BoM/cable-schedule exports.",
   "private": false,
   "type": "module",
+  "main": "electron/main.cjs",
   "license": "MIT",
   "author": "SP1R4",
   "homepage": "https://github.com/SP1R4/noctis-wifi-planner#readme",
@@ -55,8 +56,12 @@
     "preview": "vite preview",
     "bundle:fonts": "node scripts/bundle-fonts.mjs",
     "fetch:images": "node scripts/fetch-device-images.mjs",
+    "package:web": "vite build && node scripts/inline-singlefile.mjs",
     "package:portable": "vite build && node scripts/inline-singlefile.mjs && node scripts/package-portable.mjs",
     "verify:portable": "vite build && node scripts/inline-singlefile.mjs && node scripts/verify-portable.mjs",
+    "make:icons": "node scripts/make-icons.mjs",
+    "app:dev": "npm run package:web && electron .",
+    "app:build": "npm run package:web && electron-builder --publish never",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -65,9 +70,47 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.47.0",
+    "electron": "^31.7.7",
+    "electron-builder": "^25.1.8",
     "jsdom": "^22.1.0",
     "typescript": "^5.5.0",
     "vite": "^5.4.0",
     "vitest": "^2.1.0"
+  },
+  "build": {
+    "appId": "com.noctis.wifiplanner",
+    "productName": "NOCTIS WiFi Planner",
+    "copyright": "Copyright © NOCTIS",
+    "directories": {
+      "output": "release",
+      "buildResources": "electron/resources"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.productivity",
+      "icon": "electron/resources/icon.icns"
+    },
+    "dmg": {
+      "title": "NOCTIS WiFi Planner ${version}"
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "electron/resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Utility",
+      "icon": "electron/resources/icon.png",
+      "maintainer": "SP1R4"
+    }
   }
 }
