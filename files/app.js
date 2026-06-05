@@ -44,6 +44,10 @@ import {
 } from './src/constants.js';
 import {runLengthM,analyzeLoad,nextFreeIp as netNextFreeIp} from './src/network.js';
 import {encryptObject,decryptObject} from './src/crypto.js';
+// PDF floor-plan import. The worker is bundled inline (?worker&inline) so the
+// portable single-file build still works from file:// with no external fetch.
+import * as pdfjsLib from 'pdfjs-dist';
+import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline';
 import {t,setLang,getLang,availableLangs} from './src/i18n.js';
 import {
   idbPutImage, idbGetImage, idbDeleteImage,
@@ -393,35 +397,63 @@ function loadFloorImage(){
 }
 
 // ═══ IMAGE UPLOAD ══════════════════════════════════
+// Store an image data-URL as the current floor's plan (IDB-backed, with an
+// inline fallback). Shared by image and PDF uploads.
+async function _applyMapDataUrl(dataUrl,name,label){
+  const oldId=F().imgId;
+  const id=_newImgId();
+  try{
+    await idbPutImage(id,dataUrl);
+    _imgCache.set(id,dataUrl);
+    F().img='';F().imgId=id;F().imgName=name;
+    mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
+    document.getElementById('brand-lbl').textContent=(SETTINGS.company||'NOCTIS')+' · '+name;
+    updateEmptyState();
+    toast('Map loaded: '+label);
+    if(oldId&&oldId!==id)idbDeleteImage(oldId).catch(()=>{});
+  }catch(err){
+    // IndexedDB unavailable or quota exceeded — fall back to inline.
+    F().img=dataUrl;F().imgName=name;F().imgId='';
+    mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
+    document.getElementById('brand-lbl').textContent=(SETTINGS.company||'NOCTIS')+' · '+name;
+    updateEmptyState();
+    toast('Map loaded (inline fallback)');
+  }
+}
+// Render the first page of a PDF to a PNG data-URL at a crisp resolution.
+let _pdfWorker=null;
+async function _pdfFirstPageDataUrl(file){
+  if(!_pdfWorker){_pdfWorker=new PdfWorker();pdfjsLib.GlobalWorkerOptions.workerPort=_pdfWorker;}
+  const buf=await file.arrayBuffer();
+  const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+  const page=await pdf.getPage(1);
+  const unit=page.getViewport({scale:1});
+  // Aim for ~2× crispness, capped so we don't blow past canvas limits.
+  const longSide=Math.max(unit.width,unit.height);
+  const scale=Math.min(4,Math.max(1,3000/longSide));
+  const viewport=page.getViewport({scale});
+  const canvas=document.createElement('canvas');
+  canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+  const ctx=canvas.getContext('2d');
+  // PDFs are transparent — paint white so the plan reads on the dark map area.
+  ctx.fillStyle='#ffffff';ctx.fillRect(0,0,canvas.width,canvas.height);
+  await page.render({canvasContext:ctx,viewport}).promise;
+  return canvas.toDataURL('image/png');
+}
 function uploadMap(input){
   const file=input.files[0];if(!file)return;
+  const name=file.name.replace(/\.[^/.]+$/,'');
+  const isPdf=file.type==='application/pdf'||/\.pdf$/i.test(file.name);
+  if(isPdf){
+    toast('Rendering PDF…');
+    _pdfFirstPageDataUrl(file)
+      .then(dataUrl=>_applyMapDataUrl(dataUrl,name,file.name+' (page 1)'))
+      .catch(err=>{console.error('PDF import failed',err);toast('Could not read PDF: '+(err&&err.message||err));});
+    input.value='';
+    return;
+  }
   const reader=new FileReader();
-  reader.onload=async e=>{
-    const name=file.name.replace(/\.[^/.]+$/,'');
-    const dataUrl=e.target.result;
-    const oldId=F().imgId;
-    const id=_newImgId();
-    try{
-      await idbPutImage(id,dataUrl);
-      _imgCache.set(id,dataUrl);
-      // Drop any stale inline data URL — IDB is now the source of truth.
-      F().img='';F().imgId=id;F().imgName=name;
-      mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
-      document.getElementById('brand-lbl').textContent=(SETTINGS.company||'NOCTIS')+' · '+name;
-      updateEmptyState();
-      toast('Map loaded: '+file.name);
-      // Best-effort cleanup of the previous image, if any.
-      if(oldId&&oldId!==id)idbDeleteImage(oldId).catch(()=>{});
-    }catch(err){
-      // IndexedDB unavailable or quota exceeded — fall back to inline so the
-      // user isn't stuck. They'll see the autosave-quota toast if relevant.
-      F().img=dataUrl;F().imgName=name;F().imgId='';
-      mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
-      document.getElementById('brand-lbl').textContent=(SETTINGS.company||'NOCTIS')+' · '+name;
-      updateEmptyState();
-      toast('Map loaded (inline fallback)');
-    }
-  };
+  reader.onload=e=>_applyMapDataUrl(e.target.result,name,file.name);
   reader.readAsDataURL(file);input.value='';
 }
 // onload handled in loadFloorImage()
