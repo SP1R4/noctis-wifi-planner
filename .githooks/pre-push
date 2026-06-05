@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+# Auto-installed via the "prepare" npm script (git config core.hooksPath .githooks).
+# Blocks a push if unit tests or the JSDoc type-check fail — the same gates CI runs.
+echo "▶ pre-push: npm run verify (tests + typecheck)…"
+npm run --silent verify || {
+  echo "✗ verify failed — push aborted. Fix the above, or 'git push --no-verify' to override."
+  exit 1
+}

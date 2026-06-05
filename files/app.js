@@ -42,6 +42,7 @@ import {
   ARCH_SCALE_PRESETS,
   MODEL_IMAGE_PLACEHOLDERS, modelImageUrl, MODEL_IMAGES,
 } from './src/constants.js';
+import {runLengthM,analyzeLoad,nextFreeIp as netNextFreeIp} from './src/network.js';
 import {t,setLang,getLang,availableLangs} from './src/i18n.js';
 import {
   idbPutImage, idbGetImage, idbDeleteImage,
@@ -524,8 +525,7 @@ function routingFactor(){const f=parseFloat(SETTINGS.cableRoutingFactor);return 
 // including the routing factor.
 function cableRunM(dev,sw,floor){
   const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
-  const dx=(dev.fx-sw.fx)*w, dy=(dev.fy-sw.fy)*h;
-  return Math.hypot(dx,dy)*(((floor||F()).scaleM)||100)/100*routingFactor();
+  return runLengthM(dev.fx,dev.fy,sw.fx,sw.fy,w,h,((floor||F()).scaleM)||100,routingFactor());
 }
 // VLAN registry helpers.
 function vlanList(){return Array.isArray(SETTINGS.vlans)?SETTINGS.vlans:[];}
@@ -597,28 +597,13 @@ function portGridHtml(a,border){
 function nextFreeIp(dev){
   const v=vlanById(dev.vlan);
   const cidr=v&&v.subnet?String(v.subnet).trim():'';
-  const m=/^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/.exec(cidr);
-  if(!m)return '';
-  const base=(parseInt(m[1])<<24)|(parseInt(m[2])<<16)|(parseInt(m[3])<<8)|parseInt(m[4]);
-  const bits=parseInt(m[5],10);
-  if(bits<1||bits>30)return '';
-  const size=2**(32-bits);
-  const net=base&(~(size-1)>>>0);
-  // Collect IPs already in use across all floors.
-  const used=new Set();
+  // Collect IPs already in use across all floors, then defer the subnet math
+  // to ./src/network.js (nextFreeIp).
+  const used=[];
   for(const f of FLOORS){
-    for(const list of [f.APS,f.CAMS,f.SWS])for(const d of (list||[]))if(d.ip)used.add(String(d.ip).trim());
+    for(const list of [f.APS,f.CAMS,f.SWS])for(const d of (list||[]))if(d.ip)used.push(String(d.ip).trim());
   }
-  // Skip network (.0) and gateway (.1); stop before broadcast. Cap the scan so
-  // a huge subnet (e.g. /8) can't freeze the UI — 4094 hosts is ample for
-  // "next free address".
-  const end=Math.min(size-1,2+4094);
-  for(let i=2;i<end;i++){
-    const n=(net+i)>>>0;
-    const ip=`${(n>>>24)&255}.${(n>>>16)&255}.${(n>>>8)&255}.${n&255}`;
-    if(!used.has(ip))return ip;
-  }
-  return '';
+  return netNextFreeIp(cidr,used);
 }
 // Total estimated client capacity (sum of per-AP capacityClients) across floors.
 function totalClientCapacity(){
@@ -670,19 +655,12 @@ function switchClients(sw,floor){
 }
 // Full PoE / port / class picture for one switch.
 function analyzeSwitch(sw,floor){
-  const f=floor||F();
-  const clients=switchClients(sw,f);
-  const draw=clients.reduce((n,c)=>n+c.w,0);
+  const clients=switchClients(sw,floor||F());
   const budget=sw.poeBudget||0;
   const ports=sw.ports||swPortCount(sw.model);   // null = unknown → skip check
-  const used=clients.length;
   const swCls=swPoeClass(sw.model,budget);
-  const overBudget=budget>0 && draw>budget;
-  const overPorts=ports!=null && used>ports;
-  const headroom=budget>0?Math.round((1-draw/budget)*100):null;
-  // Devices needing a higher PoE class than the switch can deliver per port.
-  const classFails=clients.filter(c=>c.cls && (!swCls || POE_CLASS_RANK[c.cls]>POE_CLASS_RANK[swCls]));
-  return {sw,clients,draw,budget,ports,used,swCls,overBudget,overPorts,headroom,classFails};
+  // Pure PoE/port/class verdict lives in ./src/network.js (analyzeLoad).
+  return {sw,clients,budget,ports,swCls,...analyzeLoad(clients,{budget,ports,swCls})};
 }
 // <option>s for a numbered port picker. Preserves a legacy/custom value (e.g.
 // "SW1 Port 4") that isn't a plain 1..N so old projects don't lose data.
