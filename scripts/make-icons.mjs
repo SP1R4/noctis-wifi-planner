@@ -3,8 +3,8 @@
 //   icon.icns          — macOS
 //   icon.ico  (256²)   — Windows
 //
-// The 1024² master is drawn here with zero dependencies (a dark squircle with
-// the NOCTIS WiFi mark). .icns/.ico are derived via macOS `sips`/`iconutil`,
+// The 1024² master is drawn here with zero dependencies (a warm-black squircle
+// with the cream NOCTIS "N" monogram). .icns/.ico are derived via `sips`/`iconutil`,
 // so run this once on a Mac and commit the results — CI just consumes them.
 //
 //   node scripts/make-icons.mjs
@@ -22,43 +22,66 @@ mkdirSync(OUT, { recursive: true });
 const W = 1024;
 const M = 84;            // outer margin
 const RR = 190;          // corner radius
-const CX = 512;
-const APEX_Y = 694;      // wifi dot centre
-const DOT_R = 52;
-const BANDS = [[150, 212], [290, 352], [430, 492]]; // [innerR, outerR]
-const FAN = Math.cos((48 * Math.PI) / 180); // half-angle of the signal fan
-const ACCENT = [51, 214, 194];
-const BG_TOP = [18, 24, 38];
-const BG_BOT = [10, 14, 22];
+// NOCTIS palette: a warm-black tile with a cream "N" monogram, matching the
+// app's dark-theme chrome (--bg #14140e, --ink #efece5).
+const MARK = [239, 236, 229];   // cream #efece5
+const BG_TOP = [30, 30, 24];    // warm near-black, subtle top→bottom gradient
+const BG_BOT = [12, 12, 9];
+// "N" monogram geometry (in the 1024² master).
+const NY0 = 302, NY1 = 726;     // letter top / bottom
+const SW = 96;                  // stroke width
+const HALF = SW / 2;
+const LX = 348, RX = 676;       // left / right vertical-bar centres
+// Subtle cream hairline frame, echoing the app's 1px panel borders.
+const FRAME_M = 150, FRAME_RR = 120, FRAME_W = 4, FRAME_ALPHA = 28;
 
 const lerp = (a, b, t) => a + (b - a) * t;
 
-// Signed distance to the rounded square (<0 inside).
-function sdRoundRect(px, py) {
-  const hx = (W - 2 * M) / 2, hy = (W - 2 * M) / 2;
-  const dx = Math.abs(px - W / 2) - (hx - RR);
-  const dy = Math.abs(py - W / 2) - (hy - RR);
+// Signed distance to a rounded square centred in the canvas (<0 inside).
+function sdRoundRect(px, py, margin, rr) {
+  const hx = (W - 2 * margin) / 2, hy = (W - 2 * margin) / 2;
+  const dx = Math.abs(px - W / 2) - (hx - rr);
+  const dy = Math.abs(py - W / 2) - (hy - rr);
   const outside = Math.hypot(Math.max(dx, 0), Math.max(dy, 0));
   const inside = Math.min(Math.max(dx, dy), 0);
-  return outside + inside - RR;
+  return outside + inside - rr;
+}
+
+// Distance from a point to a line segment (for the diagonal stroke).
+function distToSeg(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+// Is the point on the "N" (two vertical bars + the connecting diagonal)?
+function onN(px, py) {
+  if (py < NY0 || py > NY1) return false;
+  if (Math.abs(px - LX) <= HALF) return true;                 // left bar
+  if (Math.abs(px - RX) <= HALF) return true;                 // right bar
+  return distToSeg(px, py, LX, NY0, RX, NY1) <= HALF;         // diagonal
 }
 
 function colorAt(px, py) {
-  if (sdRoundRect(px, py) >= 0) return [0, 0, 0, 0];
+  if (sdRoundRect(px, py, M, RR) >= 0) return [0, 0, 0, 0];
+  if (onN(px, py)) return [MARK[0], MARK[1], MARK[2], 255];
   const t = (py - M) / (W - 2 * M);
   const bg = [
-    lerp(BG_TOP[0], BG_BOT[0], t),
-    lerp(BG_TOP[1], BG_BOT[1], t),
-    lerp(BG_TOP[2], BG_BOT[2], t),
+    Math.round(lerp(BG_TOP[0], BG_BOT[0], t)),
+    Math.round(lerp(BG_TOP[1], BG_BOT[1], t)),
+    Math.round(lerp(BG_TOP[2], BG_BOT[2], t)),
   ];
-  const dx = px - CX, dy = py - APEX_Y, rho = Math.hypot(dx, dy);
-  let onMark = rho <= DOT_R;
-  if (!onMark && dy < 0 && -dy >= FAN * rho) {
-    for (const [inR, outR] of BANDS) {
-      if (rho >= inR && rho <= outR) { onMark = true; break; }
-    }
+  // Composite the faint hairline frame over the background.
+  if (Math.abs(sdRoundRect(px, py, FRAME_M, FRAME_RR)) <= FRAME_W / 2) {
+    const a = FRAME_ALPHA / 255;
+    return [
+      Math.round(bg[0] + (MARK[0] - bg[0]) * a),
+      Math.round(bg[1] + (MARK[1] - bg[1]) * a),
+      Math.round(bg[2] + (MARK[2] - bg[2]) * a),
+      255,
+    ];
   }
-  return onMark ? [...ACCENT, 255] : [bg[0], bg[1], bg[2], 255];
+  return [bg[0], bg[1], bg[2], 255];
 }
 
 // Render with 3×3 supersampling for clean edges.
