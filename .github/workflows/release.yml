@@ -54,15 +54,13 @@ jobs:
         run: npm run app:build
         env:
           # Unsigned builds — don't let electron-builder hunt for certificates.
-          # To sign later, set these repo secrets and drop the line above:
+          # To sign later, add the signing env vars HERE (and the matching repo
+          # secrets), then drop CSC_IDENTITY_AUTO_DISCOVERY:
           #   macOS:   CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
           #   Windows: CSC_LINK (.pfx, base64), CSC_KEY_PASSWORD
+          # NOTE: don't pass empty CSC_LINK — electron-builder treats "" as a
+          # cert path and the macOS build fails ("not a file").
           CSC_IDENTITY_AUTO_DISCOVERY: false
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build portable browser zip
