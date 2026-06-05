@@ -1,6 +1,6 @@
 # Installation
 
-NOCTIS WiFi Planner is a static single-page app. You can run it from
+Plexus is a static single-page app. You can run it from
 source (with hot reload) or build a portable bundle that opens straight
 from disk — no web server required for end users.
 
@@ -10,8 +10,8 @@ Scripts that check for/install Node and build the app live in `scripts/`.
 Run them from the repo root after cloning.
 
 ```bash
-git clone https://github.com/SP1R4/noctis-wifi-planner
-cd noctis-wifi-planner
+git clone https://github.com/SP1R4/plexus-network-planner
+cd plexus-network-planner
 ```
 
 | OS                | Command                                                            |
@@ -48,8 +48,8 @@ If you use [nvm](https://github.com/nvm-sh/nvm), the repo includes an
 Hot-reloads on every save. Best for hacking on the planner itself.
 
 ```bash
-git clone https://github.com/SP1R4/noctis-wifi-planner
-cd noctis-wifi-planner
+git clone https://github.com/SP1R4/plexus-network-planner
+cd plexus-network-planner
 npm install
 npm run dev
 ```
@@ -86,7 +86,7 @@ so you can:
 
 If you don't want to build it yourself, download the latest packaged
 release from the GitHub Releases page:
-<https://github.com/SP1R4/noctis-wifi-planner/releases>
+<https://github.com/SP1R4/plexus-network-planner/releases>
 
 Unzip, open `index.html`, you're in.
 
@@ -128,7 +128,7 @@ or Firefox.
 
 ## Uninstall
 
-`rm -rf noctis-wifi-planner` does it. No system files written, no daemons
+`rm -rf plexus-network-planner` does it. No system files written, no daemons
 installed. localStorage and IndexedDB data lives in your browser profile
 under whichever origin you served the app from; clearing site data for
 that origin wipes it.

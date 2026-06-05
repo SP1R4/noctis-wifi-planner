@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# NOCTIS WiFi Planner — macOS installer
+# Plexus — macOS installer
 # Installs Homebrew (if missing) and Node.js, then runs `npm install` and
 # `npm run build`. Run from the repo root:
 #   bash scripts/install-macos.sh
@@ -19,7 +19,7 @@ die()  { printf '%s✗%s %s\n'   "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
 # Sanity check: we expect to run from the repo root.
 [[ -f package.json ]] || die "Run this from the repo root (package.json not found here)."
-grep -q '"noctis-wifi-planner"' package.json || die "package.json doesn't look like noctis-wifi-planner."
+grep -q '"plexus-network-planner"' package.json || die "package.json doesn't look like plexus-network-planner."
 
 [[ "$(uname -s)" == "Darwin" ]] || die "This script is for macOS. Use scripts/install-ubuntu.sh on Linux."
 

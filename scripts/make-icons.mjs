@@ -4,7 +4,7 @@
 //   icon.ico  (256²)   — Windows
 //
 // The 1024² master is drawn here with zero dependencies (a warm-black squircle
-// with the cream NOCTIS "N" monogram). .icns/.ico are derived via `sips`/`iconutil`,
+// with the cream Plexus node-mesh mark). .icns/.ico are derived via `sips`/`iconutil`,
 // so run this once on a Mac and commit the results — CI just consumes them.
 //
 //   node scripts/make-icons.mjs
@@ -22,16 +22,23 @@ mkdirSync(OUT, { recursive: true });
 const W = 1024;
 const M = 84;            // outer margin
 const RR = 190;          // corner radius
-// NOCTIS palette: a warm-black tile with a cream "N" monogram, matching the
-// app's dark-theme chrome (--bg #14140e, --ink #efece5).
+// Plexus palette: a warm-black tile with a cream node-mesh mark — a network of
+// interconnected nodes — matching the app's dark-theme chrome
+// (--bg #14140e, --ink #efece5).
 const MARK = [239, 236, 229];   // cream #efece5
 const BG_TOP = [30, 30, 24];    // warm near-black, subtle top→bottom gradient
 const BG_BOT = [12, 12, 9];
-// "N" monogram geometry (in the 1024² master).
-const NY0 = 302, NY1 = 726;     // letter top / bottom
-const SW = 96;                  // stroke width
-const HALF = SW / 2;
-const LX = 348, RX = 676;       // left / right vertical-bar centres
+// Node-mesh geometry (in the 1024² master): a centre node fully connected to a
+// triangle of three outer nodes — a small "plexus".
+const NODES = [
+  [512, 512],   // centre
+  [512, 300],   // top
+  [336, 660],   // bottom-left
+  [688, 660],   // bottom-right
+];
+const EDGES = [[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]];  // full mesh
+const NODE_R = 60;              // node disc radius
+const EDGE_HALF = 17;           // half the connecting-line width
 // Subtle cream hairline frame, echoing the app's 1px panel borders.
 const FRAME_M = 150, FRAME_RR = 120, FRAME_W = 4, FRAME_ALPHA = 28;
 
@@ -47,24 +54,25 @@ function sdRoundRect(px, py, margin, rr) {
   return outside + inside - rr;
 }
 
-// Distance from a point to a line segment (for the diagonal stroke).
+// Distance from a point to a line segment (for the mesh edges).
 function distToSeg(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay;
   const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
-// Is the point on the "N" (two vertical bars + the connecting diagonal)?
-function onN(px, py) {
-  if (py < NY0 || py > NY1) return false;
-  if (Math.abs(px - LX) <= HALF) return true;                 // left bar
-  if (Math.abs(px - RX) <= HALF) return true;                 // right bar
-  return distToSeg(px, py, LX, NY0, RX, NY1) <= HALF;         // diagonal
+// Is the point on the node-mesh (a disc at any node, or on any connecting edge)?
+function onMesh(px, py) {
+  for (const [x, y] of NODES) if (Math.hypot(px - x, py - y) <= NODE_R) return true;
+  for (const [a, b] of EDGES) {
+    if (distToSeg(px, py, NODES[a][0], NODES[a][1], NODES[b][0], NODES[b][1]) <= EDGE_HALF) return true;
+  }
+  return false;
 }
 
 function colorAt(px, py) {
   if (sdRoundRect(px, py, M, RR) >= 0) return [0, 0, 0, 0];
-  if (onN(px, py)) return [MARK[0], MARK[1], MARK[2], 255];
+  if (onMesh(px, py)) return [MARK[0], MARK[1], MARK[2], 255];
   const t = (py - M) / (W - 2 * M);
   const bg = [
     Math.round(lerp(BG_TOP[0], BG_BOT[0], t)),

@@ -9,8 +9,8 @@ export const PROJECT_VERSION=8;
 // Settings that apply project-wide (branding, RF assumptions, region, defaults).
 // `coverageOpacity` / `lastModel` are user-preference style and live here too.
 export const DEFAULT_SETTINGS={
-  company:    'NOCTIS',
-  tagline:    'Network Planning',
+  company:    'Plexus',
+  tagline:    'Network Site Planner',
   contact:    '',
   locale:     'en-GB',
   metaLine:   '',
@@ -58,7 +58,7 @@ const DEFAULT_FLOOR_SCALE_M=100;
 //            / heatmap mode + band / branding logo + footer.
 export function migrateProject(data){
   const warnings=[];
-  if(!data||typeof data!=='object'){throw new Error('Not a NOCTIS project file');}
+  if(!data||typeof data!=='object'){throw new Error('Not a Plexus project file');}
   if(!Array.isArray(data.floors)){throw new Error('Missing floors');}
   const v=typeof data.version==='number'?data.version:1;
   if(v>PROJECT_VERSION){

@@ -383,7 +383,7 @@ function loadFloorImage(){
   // render correctly during the transition.
   const applySrc=(src,name)=>{
     mapImg.src=src||'';if(mmImg)mmImg.src=src||'';
-    document.getElementById('brand-lbl').textContent=src?(SETTINGS.company||'NOCTIS')+' · '+(name||''):(SETTINGS.company||'NOCTIS')+' Planner';
+    document.getElementById('brand-lbl').textContent=src?(SETTINGS.company||'Plexus')+' · '+(name||''):(SETTINGS.company||'Plexus')+' Planner';
     if(src&&mapImg.complete&&mapImg.naturalWidth>0){fitZoom();render();renderMM();updateScaleBar();calcCoverage();}
     updateEmptyState();
   };
@@ -407,7 +407,7 @@ async function _applyMapDataUrl(dataUrl,name,label){
     _imgCache.set(id,dataUrl);
     F().img='';F().imgId=id;F().imgName=name;
     mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
-    document.getElementById('brand-lbl').textContent=(SETTINGS.company||'NOCTIS')+' · '+name;
+    document.getElementById('brand-lbl').textContent=(SETTINGS.company||'Plexus')+' · '+name;
     updateEmptyState();
     toast('Map loaded: '+label);
     if(oldId&&oldId!==id)idbDeleteImage(oldId).catch(()=>{});
@@ -415,7 +415,7 @@ async function _applyMapDataUrl(dataUrl,name,label){
     // IndexedDB unavailable or quota exceeded — fall back to inline.
     F().img=dataUrl;F().imgName=name;F().imgId='';
     mapImg.src=dataUrl;if(mmImg)mmImg.src=dataUrl;
-    document.getElementById('brand-lbl').textContent=(SETTINGS.company||'NOCTIS')+' · '+name;
+    document.getElementById('brand-lbl').textContent=(SETTINGS.company||'Plexus')+' · '+name;
     updateEmptyState();
     toast('Map loaded (inline fallback)');
   }
@@ -1217,7 +1217,7 @@ async function saveProject(){
   await _encryptCredsInto(data);
   const blob=new Blob([JSON.stringify(data,_stripCacheReplacer,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-  a.download='noctis_project.json';a.click();
+  a.download='plexus_project.json';a.click();
   toast(_credPass?'Project saved (credentials encrypted)':'Project saved');
 }
 // ── Credential vault (encrypt-at-rest for saved/exported projects) ─────────
@@ -1332,7 +1332,7 @@ function loadProject(input){
 function applySettingsToBrand(){
   const lbl=document.getElementById('brand-lbl');
   if(lbl){
-    const co=SETTINGS.company||'NOCTIS';
+    const co=SETTINGS.company||'Plexus';
     const f=F();
     lbl.textContent=f&&f.imgName?co+' · '+f.imgName:co+' Planner';
   }
@@ -3073,7 +3073,7 @@ async function doInstallSheets(){
       <div class="photo-placeholder">📷 INSTALL PHOTO</div>
     </section>`;
   }).join('\n');
-  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>${esc(SETTINGS.company||'NOCTIS')} — Install Sheets</title><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet"><style>
+  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>${esc(SETTINGS.company||'Plexus')} — Install Sheets</title><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet"><style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#efece5;font-family:'Rajdhani',sans-serif;color:#000;padding:36px 40px}
 .cover{margin-bottom:30px;padding-bottom:14px;border-bottom:1px solid #000}
@@ -3091,7 +3091,7 @@ table.install td{font-size:12px;padding:6px 9px;border-bottom:1px solid rgba(0,0
 .print-btn{margin-top:24px;padding:12px 28px;background:#000;color:#efece5;border:none;font-size:11px;cursor:pointer;font-family:'Share Tech Mono',monospace;letter-spacing:.2em;text-transform:uppercase;font-weight:700}
 @media print{body{padding:24px;background:#fff}.print-btn{display:none}.sheet.page{page-break-before:always}}
 </style></head><body>
-<div class="cover"><h1>${esc(SETTINGS.company||'NOCTIS')} — AP install sheets</h1><div class="sub">${new Date().toLocaleDateString()} · ${allAps.length} sheets</div></div>
+<div class="cover"><h1>${esc(SETTINGS.company||'Plexus')} — AP install sheets</h1><div class="sub">${new Date().toLocaleDateString()} · ${allAps.length} sheets</div></div>
 ${sections}
 <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
 </body></html>`;
@@ -4470,7 +4470,7 @@ async function doExport(){
   const {cw,ch,innerSVG}=buildMapOverlaySVG();
   const name=f.imgName||'WiFi Map';
   const apImg=await _resolveExportImages(APS());
-  const html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>${name} — WiFi Coverage | NOCTIS</title><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet"><style>
+  const html=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>${name} — Coverage | Plexus</title><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet"><style>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{background:#efece5;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:28px 18px 40px;font-family:'Rajdhani',sans-serif;color:#000}
 .tb{width:100%;max-width:1200px;display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
@@ -4478,7 +4478,7 @@ html,body{background:#efece5;min-height:100vh;display:flex;flex-direction:column
 .st{font-size:10px;font-family:'Share Tech Mono',monospace;color:rgba(0,0,0,.55);display:flex;align-items:center;gap:6px;letter-spacing:.1em;text-transform:uppercase}
 .sd{width:5px;height:5px;border-radius:50%;background:#000}
 /* Header pill: standalone block above the map, with breathing space below.
-   Hierarchy: NOCTIS Network Audit dominant (the brand) → project name secondary
+   Hierarchy: Plexus Network Audit dominant (the brand) → project name secondary
    (variable, project-specific) → tagline tertiary on the right. */
 .mh{
   width:100%;max-width:1200px;
@@ -4528,10 +4528,10 @@ html,body{background:#efece5;min-height:100vh;display:flex;flex-direction:column
 .ft{width:100%;max-width:1200px;margin-top:18px;padding-top:10px;border-top:1px solid rgba(0,0,0,.2);font-size:9px;font-family:'Share Tech Mono',monospace;color:rgba(0,0,0,.5);letter-spacing:.12em;text-transform:uppercase;text-align:center}
 .mhlogo{max-height:38px;max-width:170px;display:block;margin-bottom:7px}
 </style></head><body>
-<header class="mh"><div class="mhl">${SETTINGS.logoDataUrl?`<img class="mhlogo" src="${esc(SETTINGS.logoDataUrl)}" alt=""/>`:''}<div class="mht">${esc(SETTINGS.reportTitle||name)}</div><div class="mhs">${esc(SETTINGS.company||'NOCTIS')}${SETTINGS.tagline?' · '+esc(SETTINGS.tagline):''}</div></div><div class="mhm">${esc(SETTINGS.metaLine||'WiFi Coverage Audit')}</div></header>
+<header class="mh"><div class="mhl">${SETTINGS.logoDataUrl?`<img class="mhlogo" src="${esc(SETTINGS.logoDataUrl)}" alt=""/>`:''}<div class="mht">${esc(SETTINGS.reportTitle||name)}</div><div class="mhs">${esc(SETTINGS.company||'Plexus')}${SETTINGS.tagline?' · '+esc(SETTINGS.tagline):''}</div></div><div class="mhm">${esc(SETTINGS.metaLine||'WiFi Coverage Audit')}</div></header>
 <div id="mw">
 <div class="mb"><img id="mi" src="${imgSrc}" alt="Coverage Map"/><div id="ov"><svg id="sl" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${cw} ${ch}" preserveAspectRatio="xMidYMid meet"><defs><filter id="gf"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${innerSVG}</svg></div></div>
-<div class="ml"><div class="li"><div class="ld"></div>AP</div><div class="li"><div class="lr"></div>Coverage</div><div class="li">⚠ Dead Zone</div><div class="li">⊞ Switch</div><span class="lb">${esc(SETTINGS.company||'NOCTIS')}</span></div></div>
+<div class="ml"><div class="li"><div class="ld"></div>AP</div><div class="li"><div class="lr"></div>Coverage</div><div class="li">⚠ Dead Zone</div><div class="li">⊞ Switch</div><span class="lb">${esc(SETTINGS.company||'Plexus')}</span></div></div>
 ${APS().length?`<table class="at"><thead><tr><th>#</th><th>Name</th><th>Model</th><th>Freq</th><th>Ch</th><th>TX</th><th>Signal</th><th>IP</th><th>MAC</th><th>Port</th><th>VLAN</th><th>Notes</th></tr></thead><tbody>${APS().map((ap,i)=>`<tr><td>${i+1}</td><td>${apImg.has(ap)?`<img class="thumb" src="${apImg.get(ap)}" alt=""/>`:''}${ap.name}</td><td>${ap.model||''}</td><td>${ap.freq}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.channel||'auto'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.txPower||'auto'}</td><td class="${{strong:'ss',medium:'sm',weak:'sw'}[ap.sig]}">${{strong:'● Strong',medium:'● Medium',weak:'● Weak'}[ap.sig]}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.ip||'—'}</td><td style="font-family:'Share Tech Mono',monospace;font-size:10px">${ap.mac||'—'}</td><td>${ap.port||'—'}</td><td>${ap.vlan||'—'}</td><td style="font-size:10px;color:rgba(0,0,0,.55)">${esc(ap.comment||ap.notes||'—')}</td></tr>`).join('')}</tbody></table>`:''}
 ${SETTINGS.footerLine?`<footer class="ft">${esc(SETTINGS.footerLine)}</footer>`:''}
 </body></html>`;
@@ -4613,7 +4613,7 @@ async function doPDF(){
   }).join('\n');
 
   const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>${esc(SETTINGS.company||'NOCTIS')} — ${esc(SETTINGS.reportTitle||'Network Audit Report')}</title><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet"><style>
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>${esc(SETTINGS.company||'Plexus')} — ${esc(SETTINGS.reportTitle||'Network Audit Report')}</title><link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet"><style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#efece5;font-family:'Rajdhani',sans-serif;color:#000;padding:44px 48px;min-height:100vh}
 .cover{text-align:left;padding:8px 0 40px;border-bottom:1px solid #000;margin-bottom:40px;position:relative}
@@ -4652,7 +4652,7 @@ img.thumb{height:26px;width:auto;max-width:44px;object-fit:contain;vertical-alig
 <div class="cover">
   ${SETTINGS.metaLine?`<div class="cover-meta">${esc(SETTINGS.metaLine)}</div>`:''}
   ${SETTINGS.logoDataUrl?`<img class="cover-logo" src="${esc(SETTINGS.logoDataUrl)}" alt=""/>`:''}
-  <div class="logo">${esc(SETTINGS.company||'NOCTIS')}</div>
+  <div class="logo">${esc(SETTINGS.company||'Plexus')}</div>
   ${SETTINGS.tagline?`<div class="tagline">${esc(SETTINGS.tagline)}</div>`:''}
   <div class="doc-title">${esc(SETTINGS.reportTitle||'Network Audit Report')}</div>
   <div class="doc-sub">${new Date().toLocaleDateString(SETTINGS.locale||'en-GB')}${SETTINGS.contact?' · '+esc(SETTINGS.contact):''}</div>
@@ -4667,7 +4667,7 @@ img.thumb{height:26px;width:auto;max-width:44px;object-fit:contain;vertical-alig
 </div>
 ${floorSections}
 ${reportNetworkHtml()}
-<div class="footer"><span>${esc(SETTINGS.company||'NOCTIS')}${SETTINGS.contact?' · '+esc(SETTINGS.contact):''}</span><span>Generated ${new Date().toLocaleString(SETTINGS.locale||'en-GB')}</span></div>
+<div class="footer"><span>${esc(SETTINGS.company||'Plexus')}${SETTINGS.contact?' · '+esc(SETTINGS.contact):''}</span><span>Generated ${new Date().toLocaleString(SETTINGS.locale||'en-GB')}</span></div>
 ${SETTINGS.footerLine?`<div class="footer-line">${esc(SETTINGS.footerLine)}</div>`:''}
 <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
 </body></html>`);
@@ -5045,9 +5045,9 @@ function showSettings(){
 
   // ── Branding ──
   addHeading('Branding');
-  addText('company','Company / Brand','NOCTIS');
+  addText('company','Company / Brand','Plexus');
   addText('tagline','Tagline','Network Planning');
-  addText('contact','Contact','hello@noctis.example');
+  addText('contact','Contact','hello@plexus.example');
   addText('metaLine','Cover meta line','optional, shown above the logo on exports');
   addText('reportTitle','Report title','Network Audit Report');
   addText('footerLine','Footer line','optional, shown in HTML/PDF report footer');

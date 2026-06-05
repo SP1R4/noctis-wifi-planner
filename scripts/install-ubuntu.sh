@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# NOCTIS WiFi Planner — Ubuntu/Debian installer
+# Plexus — Ubuntu/Debian installer
 # Installs Node.js 20 LTS via NodeSource (Apt) if missing, then runs
 # `npm install` and `npm run build`. Tested on Ubuntu 22.04 / 24.04 and
 # Debian 12. Run from the repo root:
@@ -19,7 +19,7 @@ warn() { printf '%s!%s %s\n'   "$C_YELLOW" "$C_RESET" "$*"; }
 die()  { printf '%s✗%s %s\n'   "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
 [[ -f package.json ]] || die "Run this from the repo root (package.json not found here)."
-grep -q '"noctis-wifi-planner"' package.json || die "package.json doesn't look like noctis-wifi-planner."
+grep -q '"plexus-network-planner"' package.json || die "package.json doesn't look like plexus-network-planner."
 
 [[ "$(uname -s)" == "Linux" ]] || die "This script is for Linux. Use scripts/install-macos.sh on macOS."
 

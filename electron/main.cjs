@@ -1,4 +1,4 @@
-// NOCTIS WiFi Planner — Electron main process.
+// Plexus — Network Site Planner — Electron main process.
 // Wraps the same self-contained web build (dist/index.html, produced by
 // `npm run package:web`) in a desktop window. The renderer is the unmodified
 // app; this process only owns the window lifecycle and routes external links
@@ -37,7 +37,7 @@ function createWindow() {
     minWidth: 1024,
     minHeight: 680,
     backgroundColor: '#0e0e0e',
-    title: 'NOCTIS WiFi Planner',
+    title: 'Plexus',
     show: false,
     icon: process.platform === 'linux'
       ? path.join(__dirname, 'resources', 'icon.png')

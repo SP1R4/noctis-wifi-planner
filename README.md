@@ -1,7 +1,7 @@
-# NOCTIS WiFi Planner
+# Plexus
 
-[![Release](https://img.shields.io/github/v/release/SP1R4/noctis-wifi-planner?color=black&label=release)](https://github.com/SP1R4/noctis-wifi-planner/releases/latest)
-[![CI](https://github.com/SP1R4/noctis-wifi-planner/actions/workflows/ci.yml/badge.svg)](https://github.com/SP1R4/noctis-wifi-planner/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/SP1R4/plexus-network-planner?color=black&label=release)](https://github.com/SP1R4/plexus-network-planner/releases/latest)
+[![CI](https://github.com/SP1R4/plexus-network-planner/actions/workflows/ci.yml/badge.svg)](https://github.com/SP1R4/plexus-network-planner/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
 [![Vite](https://img.shields.io/badge/built%20with-vite-646cff.svg)](https://vitejs.dev/)
 [![Vanilla JS](https://img.shields.io/badge/no%20framework-vanilla%20JS-f7df1e.svg)](#)
@@ -29,7 +29,7 @@ No backend. No accounts. Projects save to a JSON file you can email.
 > per-AP install sheets, branded exports). Type-checked, E2E-tested,
 > i18n-ready — and still a zero-dependency static browser app.
 >
-> **Download — [latest release](https://github.com/SP1R4/noctis-wifi-planner/releases/latest):**
+> **Download — [latest release](https://github.com/SP1R4/plexus-network-planner/releases/latest):**
 > desktop installers for **macOS** (`.dmg`), **Windows** (`.exe`) and **Linux**
 > (`.AppImage`/`.deb`), or the **portable browser zip** (unzip and open
 > `index.html`, no install). · [Changelog](CHANGELOG.md)
@@ -130,8 +130,8 @@ No backend. No accounts. Projects save to a JSON file you can email.
 Requires Node 18+ (LTS recommended).
 
 ```bash
-git clone https://github.com/SP1R4/noctis-wifi-planner
-cd noctis-wifi-planner
+git clone https://github.com/SP1R4/plexus-network-planner
+cd plexus-network-planner
 npm install
 npm run dev          # http://localhost:5173
 ```
@@ -155,7 +155,7 @@ so the output works equally well over `http://`, a CDN, or `file://`.
 ## Desktop app (macOS / Windows / Linux)
 
 Native installers wrap the same web build in an Electron window. Grab the
-installer for your OS from the [Releases](https://github.com/SP1R4/noctis-wifi-planner/releases)
+installer for your OS from the [Releases](https://github.com/SP1R4/plexus-network-planner/releases)
 page:
 
 | OS      | File                    |
@@ -189,7 +189,7 @@ The apps are **not code-signed** (that needs paid Apple/Windows certificates),
 so the OS will warn on first launch. This is expected:
 
 - **macOS** — right-click the app → **Open** → **Open** (once). Or, if
-  Gatekeeper still blocks it: `xattr -dr com.apple.quarantine "/Applications/NOCTIS WiFi Planner.app"`.
+  Gatekeeper still blocks it: `xattr -dr com.apple.quarantine "/Applications/Plexus.app"`.
 - **Windows** — on the SmartScreen prompt, click **More info** → **Run anyway**.
 - **Linux** — `chmod +x` the `.AppImage` and run it.
 

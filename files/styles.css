@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════
-   NOCTIS WiFi Planner — light theme
-   Cream bg, black ink, hairlines. Matches NOCTIS brand identity.
+   Plexus — Network Site Planner — light theme
+   Cream bg, black ink, hairlines. Matches Plexus brand identity.
    ═══════════════════════════════════════════════════════════════ */
 
 :root{
@@ -365,7 +365,7 @@ html,body{
   border-bottom:1px solid var(--hair);
 }
 .topbar.floor-row.present-slim::after{
-  content:'NOCTIS · ESC TO EXIT';
+  content:'PLEXUS · ESC TO EXIT';
   position:absolute;right:14px;top:50%;transform:translateY(-50%);
   font-family:'Share Tech Mono',monospace;font-size:9px;
   letter-spacing:.2em;color:var(--ink-45);font-weight:700;

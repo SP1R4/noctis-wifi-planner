@@ -699,7 +699,7 @@ export const ROAMING_OVERLAP_DBM=-67;
 // slab with rebar at 5 GHz. User-configurable per-project.
 export const DEFAULT_FLOOR_SLAB_DB=18;
 
-// Curated AP color palette — chosen to read clearly on the cream NOCTIS canvas.
+// Curated AP color palette — chosen to read clearly on the cream Plexus canvas.
 // Empty value means "use default ink (#000)".
 export const AP_COLORS=[
   {value:'',         label:'Default'},
@@ -734,7 +734,7 @@ export {MODEL_IMAGES};
 
 // Build a neutral inline-SVG data URI from a glyph body + caption. Inline so it
 // always renders, even from file:// and offline. Styled to read on the cream
-// NOCTIS canvas (same palette as the empty-state UI).
+// Plexus canvas (same palette as the empty-state UI).
 function _phSvg(inner,label){
   return 'data:image/svg+xml;utf8,'+encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90" viewBox="0 0 160 90">`

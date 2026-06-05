@@ -1,4 +1,4 @@
-# NOCTIS WiFi Planner — Windows installer (PowerShell)
+# Plexus — Windows installer (PowerShell)
 # Installs Node.js LTS via winget (or Chocolatey if you already use it),
 # then runs `npm install` and `npm run build`.
 #
@@ -20,8 +20,8 @@ if (-not (Test-Path 'package.json')) {
   Write-Fail "Run this from the repo root (package.json not found here)."
 }
 $pkg = Get-Content 'package.json' -Raw
-if ($pkg -notmatch 'noctis-wifi-planner') {
-  Write-Fail "package.json doesn't look like noctis-wifi-planner."
+if ($pkg -notmatch 'plexus-network-planner') {
+  Write-Fail "package.json doesn't look like plexus-network-planner."
 }
 
 # --- Node.js -----------------------------------------------------------------

@@ -12,7 +12,7 @@ security fixes. There's no LTS branch.
 
 ## Threat model in short
 
-NOCTIS WiFi Planner is a fully client-side single-page app. It has:
+Plexus is a fully client-side single-page app. It has:
 
 - **No backend.** No data leaves the user's browser.
 - **No third-party network calls** at runtime. Google Fonts is referenced
@@ -36,7 +36,7 @@ The realistic attack surface is:
 **Please don't open a public GitHub issue for security bugs.**
 
 Instead, report privately via GitHub's
-[private vulnerability reporting](https://github.com/SP1R4/noctis-wifi-planner/security/advisories/new)
+[private vulnerability reporting](https://github.com/SP1R4/plexus-network-planner/security/advisories/new)
 on the repository. Include:
 
 - A description of the issue and its impact

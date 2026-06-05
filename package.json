@@ -1,19 +1,19 @@
 {
-  "name": "noctis-wifi-planner",
+  "name": "plexus-network-planner",
   "version": "3.2.0",
-  "description": "Professional WiFi + IP camera site-planner that runs in the browser. Wall-aware ray-cast coverage, SNR/throughput/MCS heatmaps, auto channel and Tx-power planning, regulatory regions + DFS, floor-to-floor RF leakage, survey CSV import, multi-floor PDF + BoM/cable-schedule exports.",
+  "description": "Plexus — professional WiFi + IP camera + switch/network site planner that runs in the browser. Wall-aware ray-cast coverage, SNR/throughput/MCS heatmaps, auto channel and Tx-power planning, regulatory regions + DFS, floor-to-floor RF leakage, survey CSV import, switch/PoE/topology planning, multi-floor PDF + BoM/cable-schedule exports.",
   "private": false,
   "type": "module",
   "main": "electron/main.cjs",
   "license": "MIT",
   "author": "SP1R4",
-  "homepage": "https://github.com/SP1R4/noctis-wifi-planner#readme",
+  "homepage": "https://github.com/SP1R4/plexus-network-planner#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SP1R4/noctis-wifi-planner.git"
+    "url": "git+https://github.com/SP1R4/plexus-network-planner.git"
   },
   "bugs": {
-    "url": "https://github.com/SP1R4/noctis-wifi-planner/issues"
+    "url": "https://github.com/SP1R4/plexus-network-planner/issues"
   },
   "keywords": [
     "wifi",
@@ -84,14 +84,14 @@
     "vitest": "^2.1.0"
   },
   "build": {
-    "appId": "com.noctis.wifiplanner",
-    "productName": "NOCTIS WiFi Planner",
-    "copyright": "Copyright © NOCTIS",
+    "appId": "com.plexus.networkplanner",
+    "productName": "Plexus",
+    "copyright": "Copyright © Plexus",
     "publish": [
       {
         "provider": "github",
         "owner": "SP1R4",
-        "repo": "noctis-wifi-planner"
+        "repo": "plexus-network-planner"
       }
     ],
     "directories": {
@@ -121,7 +121,7 @@
       "icon": "electron/resources/icon.icns"
     },
     "dmg": {
-      "title": "NOCTIS WiFi Planner ${version}"
+      "title": "Plexus ${version}"
     },
     "win": {
       "target": [

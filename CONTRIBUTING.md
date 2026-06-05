@@ -1,14 +1,14 @@
 # Contributing
 
-Thanks for taking the time. NOCTIS WiFi Planner is a small, one-file-ish
+Thanks for taking the time. Plexus is a small, one-file-ish
 app and almost any change is welcome — bug fixes, new AP catalogs, RF
 math refinements, UI polish.
 
 ## Quick start
 
 ```bash
-git clone https://github.com/SP1R4/noctis-wifi-planner
-cd noctis-wifi-planner
+git clone https://github.com/SP1R4/plexus-network-planner
+cd plexus-network-planner
 npm install
 npm run dev        # http://localhost:5173
 npm test           # runs the full test suite (~250ms)

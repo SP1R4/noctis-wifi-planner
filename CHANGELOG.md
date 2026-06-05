@@ -35,7 +35,7 @@ Quality-of-life and distribution release.
 
 The "network + desktop" release. Switches/routers become first-class
 (port mapping, PoE realism, topology, auto-cabling, validation), devices
-gain management credentials, and NOCTIS ships as native desktop apps for
+gain management credentials, and Plexus ships as native desktop apps for
 macOS, Windows and Linux alongside the portable browser build.
 
 ### Added
@@ -58,7 +58,7 @@ macOS, Windows and Linux alongside the portable browser build.
   omitted from reports.
 - **Desktop apps.** Electron-wrapped native installers (macOS dmg/zip,
   Windows NSIS exe, Linux AppImage/deb) built by a GitHub Actions matrix
-  on each version tag, with a NOCTIS-branded app icon.
+  on each version tag, with a Plexus-branded app icon.
 
 ### Fixed
 - Custom vendor catalog now supports switch ports/PoE/class, dedups
@@ -69,7 +69,7 @@ macOS, Windows and Linux alongside the portable browser build.
 
 ## [3.0.0] — 2026-05-20
 
-The "professional tool" release. NOCTIS gains a physically grounded RF
+The "professional tool" release. Plexus gains a physically grounded RF
 engine (SNR / throughput / capacity, selectable propagation models,
 regulatory regions, antenna fidelity, floor-to-floor leakage), survey
 import for predicted-vs-measured validation, design-review workflow
@@ -131,12 +131,12 @@ E2E, i18n, a plugin API). Still a zero-dependency static browser app.
 - Accessibility: modals are `role="dialog"` with focus capture /
   restore and a Tab trap; live regions announce hints and toasts.
 
-[Unreleased]: https://github.com/SP1R4/noctis-wifi-planner/compare/v3.0.0...HEAD
-[3.0.0]: https://github.com/SP1R4/noctis-wifi-planner/releases/tag/v3.0.0
+[Unreleased]: https://github.com/SP1R4/plexus-network-planner/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/SP1R4/plexus-network-planner/releases/tag/v3.0.0
 
 ## [2.0.0] — 2026-05-19
 
-A meaty release that pushes NOCTIS from "WiFi coverage planner" into
+A meaty release that pushes Plexus from "WiFi coverage planner" into
 "network/security planner". Highlights: real signal-strength heatmap, IP
 cameras as a first-class item type, directional AP antennas, PoE budget +
 cable runs, wall vertex editing, multi-select, SVG wall import, shareable
@@ -184,7 +184,7 @@ URLs, and a per-floor PDF report.
 - Bundle size: 121 KB / 36 KB gzipped (was 84 / 26 KB) — +20 KB for
   everything above. Still zero runtime dependencies.
 
-[2.0.0]: https://github.com/SP1R4/noctis-wifi-planner/releases/tag/v2.0.0
+[2.0.0]: https://github.com/SP1R4/plexus-network-planner/releases/tag/v2.0.0
 
 ## [1.0.0] — 2026-05-18
 
@@ -228,4 +228,4 @@ First public release.
 - Walls placed before a floor-plan swap no longer end up off-canvas after
   the swap — they're now anchored to the image, not the pixel grid.
 
-[1.0.0]: https://github.com/SP1R4/noctis-wifi-planner/releases/tag/v1.0.0
+[1.0.0]: https://github.com/SP1R4/plexus-network-planner/releases/tag/v1.0.0

@@ -14,7 +14,7 @@ function trackErrors(page) {
 test('app boots without errors and shows empty state', async ({page}) => {
   const errors = trackErrors(page);
   await page.goto('/');
-  await expect(page).toHaveTitle(/NOCTIS/i);
+  await expect(page).toHaveTitle(/Plexus/i);
   await expect(page.locator('#empty-state')).toBeVisible();
   await expect(page.locator('#btn-add')).toBeVisible();
   expect(errors, errors.join('\n')).toEqual([]);

@@ -3,7 +3,7 @@
 //
 //   npm run package:portable
 //
-// Output: build/noctis-wifi-planner-portable-v<version>.zip — unzip anywhere and
+// Output: build/plexus-network-planner-portable-v<version>.zip — unzip anywhere and
 // double-click index.html. Works fully offline (file://), cross-platform.
 
 import {cp, mkdir, rm, writeFile, readFile} from 'node:fs/promises';
@@ -20,7 +20,7 @@ const BUILD=join(ROOT,'build');
 const run=async()=>{
   if(!existsSync(DIST))throw new Error('dist/ not found — run `npm run build` first.');
   const pkg=JSON.parse(await readFile(join(ROOT,'package.json'),'utf8'));
-  const name=`noctis-wifi-planner-portable-v${pkg.version}`;
+  const name=`plexus-network-planner-portable-v${pkg.version}`;
   const stage=join(BUILD,name);
   await rm(stage,{recursive:true,force:true});
   await mkdir(stage,{recursive:true});
@@ -40,7 +40,7 @@ const run=async()=>{
   console.log('Unzip anywhere and double-click index.html. Offline, no install.');
 };
 
-const README=(v)=>`NOCTIS WiFi Planner — Portable (v${v})
+const README=(v)=>`Plexus — Portable (v${v})
 ==================================================
 
 HOW TO RUN
