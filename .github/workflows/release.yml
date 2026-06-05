@@ -27,12 +27,17 @@ jobs:
               release/*.dmg
               release/*.zip
           - os: windows-latest
+            # latest.yml + .blockmap power electron-updater self-updates.
             artifacts: |
               release/*.exe
+              release/latest.yml
+              release/*.blockmap
           - os: ubuntu-latest
             artifacts: |
               release/*.AppImage
               release/*.deb
+              release/latest-linux.yml
+              build/*.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -49,8 +54,20 @@ jobs:
         run: npm run app:build
         env:
           # Unsigned builds — don't let electron-builder hunt for certificates.
+          # To sign later, set these repo secrets and drop the line above:
+          #   macOS:   CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
+          #   Windows: CSC_LINK (.pfx, base64), CSC_KEY_PASSWORD
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build portable browser zip
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run package:portable
 
       - name: Attach installers to the release
         if: startsWith(github.ref, 'refs/tags/')

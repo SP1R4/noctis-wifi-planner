@@ -28,10 +28,11 @@ No backend. No accounts. Projects save to a JSON file you can email.
 > annotations), and professional deliverables (BoM / cable-schedule CSV,
 > per-AP install sheets, branded exports). Type-checked, E2E-tested,
 > i18n-ready — and still a zero-dependency static browser app.
-> Pre-built bundle (unzip and open `index.html`, no Node required):
-> **[Download v3.0.0](https://github.com/SP1R4/noctis-wifi-planner/releases/download/v3.0.0/noctis-wifi-planner-v3.0.0.zip)**
-> · [Release notes](https://github.com/SP1R4/noctis-wifi-planner/releases/tag/v3.0.0)
-> · [Changelog](CHANGELOG.md)
+>
+> **Download — [latest release](https://github.com/SP1R4/noctis-wifi-planner/releases/latest):**
+> desktop installers for **macOS** (`.dmg`), **Windows** (`.exe`) and **Linux**
+> (`.AppImage`/`.deb`), or the **portable browser zip** (unzip and open
+> `index.html`, no install). · [Changelog](CHANGELOG.md)
 
 ---
 

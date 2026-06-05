@@ -9,6 +9,20 @@
 const { app, BrowserWindow, shell, Menu } = require('electron');
 const path = require('node:path');
 
+// Self-update from GitHub Releases (electron-updater reads the publish config
+// baked into app-update.yml). Guarded so a failure can never crash the app.
+function setupAutoUpdate() {
+  if (!app.isPackaged) return;            // dev runs have no update feed
+  // macOS Squirrel requires a code-signed app to apply updates; ours is
+  // unsigned, so skip there until signing is set up (Win/Linux work unsigned).
+  if (process.platform === 'darwin') return;
+  try {
+    const { autoUpdater } = require('electron-updater');
+    autoUpdater.on('error', () => {});    // network/feed errors are non-fatal
+    autoUpdater.checkForUpdatesAndNotify();
+  } catch { /* updater unavailable — ignore */ }
+}
+
 // The built, inlined single-file app lives at <appRoot>/dist/index.html both in
 // development (repo root) and when packaged (electron-builder keeps the dist/
 // tree alongside electron/).
@@ -80,6 +94,7 @@ function buildMenu() {
 app.whenReady().then(() => {
   buildMenu();
   createWindow();
+  setupAutoUpdate();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

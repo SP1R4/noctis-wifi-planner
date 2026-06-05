@@ -70,6 +70,9 @@
     "e2e": "playwright test",
     "e2e:install": "playwright install --with-deps chromium"
   },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
   "devDependencies": {
     "@playwright/test": "^1.47.0",
     "electron": "^31.7.7",
@@ -83,6 +86,13 @@
     "appId": "com.noctis.wifiplanner",
     "productName": "NOCTIS WiFi Planner",
     "copyright": "Copyright © NOCTIS",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "SP1R4",
+        "repo": "noctis-wifi-planner"
+      }
+    ],
     "directories": {
       "output": "release",
       "buildResources": "electron/resources"
@@ -93,8 +103,8 @@
     ],
     "mac": {
       "target": [
-        "dmg",
-        "zip"
+        { "target": "dmg", "arch": ["universal"] },
+        { "target": "zip", "arch": ["universal"] }
       ],
       "category": "public.app-category.productivity",
       "icon": "electron/resources/icon.icns"
