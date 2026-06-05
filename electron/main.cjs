@@ -50,6 +50,16 @@ function createWindow() {
     return { action: 'allow' };
   });
 
+  // Harden against navigating the app frame away from the bundled file://
+  // app (e.g. a stray link or injected redirect). The app is a single page —
+  // it should never navigate. External http(s) targets open in the browser.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url !== mainWindow.webContents.getURL()) {
+      event.preventDefault();
+      if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    }
+  });
+
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 

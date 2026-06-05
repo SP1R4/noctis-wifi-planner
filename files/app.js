@@ -5207,6 +5207,15 @@ function setSidebarWidth(px){
   handle.addEventListener('dblclick',()=>{setSidebarWidth(220);setTimeout(fitZoom,30);});
 })();
 
+// In the desktop (Electron) build the page lives at a file:// URL, so the
+// Share-link feature (which encodes the project into a shareable https URL)
+// is meaningless — hide its button there.
+const IS_ELECTRON=/electron/i.test((typeof navigator!=='undefined'&&navigator.userAgent)||'');
+if(IS_ELECTRON){
+  const sb=document.querySelector('[data-action="share-link"]');
+  if(sb)sb.style.display='none';
+}
+
 // Small delay to let browser lay out the image, then offer to restore.
 // If the URL has a #p=... payload, that takes priority — autosave restore
 // only triggers when there's no shared project to load.
