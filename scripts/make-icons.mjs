@@ -179,15 +179,27 @@ const icns = spawnSync('iconutil', ['-c', 'icns', iconset, '-o', join(OUT, 'icon
 rmSync(iconset, { recursive: true, force: true });
 console.log(icns.status === 0 ? '✓ icon.icns' : '✗ icon.icns (iconutil failed — macOS only)');
 
-// ── .ico (PNG-in-ICO, 256²) ──────────────────────────────────────────
-const png256 = encodePng(256, render(256));
-const dir = Buffer.alloc(6);
-dir.writeUInt16LE(0, 0); dir.writeUInt16LE(1, 2); dir.writeUInt16LE(1, 4);
-const entry = Buffer.alloc(16);
-entry[0] = 0; entry[1] = 0;            // 0 ⇒ 256
-entry.writeUInt16LE(1, 4);             // planes
-entry.writeUInt16LE(32, 6);            // bit depth
-entry.writeUInt32LE(png256.length, 8); // size
-entry.writeUInt32LE(22, 12);           // offset (6 + 16)
-writeFileSync(join(OUT, 'icon.ico'), Buffer.concat([dir, entry, png256]));
-console.log('✓ icon.ico (256²)');
+// ── .ico (multi-size PNG-in-ICO) ─────────────────────────────────────
+// A single 256² entry leaves Windows downscaling for the taskbar/title bar,
+// which several shell contexts skip — so the app falls back to the default
+// Electron icon. Pack the standard sizes so every context has a native one.
+const ICO_SIZES = [256, 128, 64, 48, 32, 24, 16];
+{
+  const pngs = ICO_SIZES.map((s) => encodePng(s, render(s)));
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0); header.writeUInt16LE(1, 2); header.writeUInt16LE(ICO_SIZES.length, 4);
+  let offset = 6 + 16 * ICO_SIZES.length;
+  const entries = ICO_SIZES.map((s, i) => {
+    const e = Buffer.alloc(16);
+    e[0] = s >= 256 ? 0 : s;            // 0 ⇒ 256
+    e[1] = s >= 256 ? 0 : s;
+    e.writeUInt16LE(1, 4);              // planes
+    e.writeUInt16LE(32, 6);            // bit depth
+    e.writeUInt32LE(pngs[i].length, 8);
+    e.writeUInt32LE(offset, 12);
+    offset += pngs[i].length;
+    return e;
+  });
+  writeFileSync(join(OUT, 'icon.ico'), Buffer.concat([header, ...entries, ...pngs]));
+  console.log(`✓ icon.ico (${ICO_SIZES.join('/')})`);
+}

@@ -6,6 +6,13 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.3.1] — 2026-06-05
+
+### Fixed
+- **Windows app icon.** The `.ico` only contained a 256² image, so Windows fell
+  back to the default Electron icon in the taskbar/title bar. It now packs the
+  standard sizes (256/128/64/48/32/24/16) for a crisp icon everywhere.
+
 ## [3.3.0] — 2026-06-05
 
 Rebrand release.
