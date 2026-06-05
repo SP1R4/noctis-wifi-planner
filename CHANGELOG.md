@@ -6,6 +6,42 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.1.0] — 2026-06-05
+
+The "network + desktop" release. Switches/routers become first-class
+(port mapping, PoE realism, topology, auto-cabling, validation), devices
+gain management credentials, and NOCTIS ships as native desktop apps for
+macOS, Windows and Linux alongside the portable browser build.
+
+### Added
+- **Switch/router planning.** Per-switch port counts with a switch-side
+  port map and numbered port pickers on devices (kept in sync), PoE
+  budget + PoE-class (af/at/bt) awareness with headroom, and a filled-out
+  switch PoE/port catalog.
+- **Topology & cabling.** Inter-floor riser uplinks, a building-wide
+  uplink-tree + rack/port-usage view (also in the PDF/HTML report),
+  auto-assign devices to the nearest switch, a Manhattan cable-routing
+  factor, and total cable length + box count in the BoM.
+- **VLAN planning.** A VLAN registry (id/name/colour/subnet) with map
+  legend, colour-by-VLAN, per-VLAN suggest-IP, and a VLAN plan table in
+  the report.
+- **Network validation panel.** One pass flagging over-budget/over-port
+  switches, PoE-class mismatches, runs > 90/100 m, duplicate IPs/ports,
+  unknown VLANs and client-capacity shortfalls.
+- **Device credentials.** Per-device management login (protocol / host /
+  port / user / password) — stored locally, stripped from Share links and
+  omitted from reports.
+- **Desktop apps.** Electron-wrapped native installers (macOS dmg/zip,
+  Windows NSIS exe, Linux AppImage/deb) built by a GitHub Actions matrix
+  on each version tag, with a NOCTIS-branded app icon.
+
+### Fixed
+- Custom vendor catalog now supports switch ports/PoE/class, dedups
+  re-applies, and actually persists across reloads.
+- Tall dialogs (Settings, vendor catalog) scroll within the viewport
+  instead of pushing their buttons off-screen.
+- Auto-assign is now undoable; suggest-IP can't hang on huge subnets.
+
 ## [3.0.0] — 2026-05-20
 
 The "professional tool" release. NOCTIS gains a physically grounded RF
