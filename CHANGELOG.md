@@ -6,6 +6,19 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.3.0] — 2026-06-05
+
+Rebrand release.
+
+### Changed
+- **Renamed to Plexus** (Network Site Planner) — the tool now spans WiFi, IP
+  cameras, switches/PoE, topology and cabling, so the name reflects the full
+  scope. New app name, window title, report/export branding, and a new
+  node-mesh app icon. Internal storage keys are unchanged, so existing
+  autosaves and saved projects open exactly as before.
+- Repository renamed to `plexus-network-planner`; auto-update and download
+  links point at the new home.
+
 ## [3.2.0] — 2026-06-05
 
 Quality-of-life and distribution release.
