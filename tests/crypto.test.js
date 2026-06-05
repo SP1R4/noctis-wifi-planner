@@ -1,4 +1,9 @@
 import { describe, it, expect } from 'vitest';
+// Node 18 doesn't expose Web Crypto as a global (Node 19+ and all browsers /
+// Electron do). Polyfill it for the test env so the suite runs on the whole
+// CI matrix; only assigns when missing, so it's a no-op on Node 20+.
+import { webcrypto } from 'node:crypto';
+if (!globalThis.crypto) globalThis.crypto = /** @type {any} */ (webcrypto);
 import { encryptObject, decryptObject, isEncryptedBlob } from '../files/src/crypto.js';
 
 describe('encryptObject / decryptObject', () => {
