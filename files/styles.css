@@ -1087,6 +1087,9 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
   border-radius:var(--r-4);padding:24px 26px;max-width:400px;width:90%;
   box-shadow:var(--shadow-2);
   animation:mdl-pop var(--t-base) var(--ease-spring);
+  /* Cap height to the viewport and let the body scroll, so tall dialogs
+     (Settings, vendor catalog) never push their action buttons off-screen. */
+  display:flex;flex-direction:column;max-height:90vh;
 }
 @keyframes mbg-fade{from{opacity:0}to{opacity:1}}
 @keyframes mdl-pop{
@@ -1096,11 +1099,14 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
 .mdl-title{
   font-size:14px;font-weight:700;color:var(--ink);
   letter-spacing:.02em;margin-bottom:8px;font-family:'Rajdhani',sans-serif;
+  flex:0 0 auto;
 }
 .mdl-body{
   font-size:13px;color:var(--ink-70);line-height:1.55;margin-bottom:20px;
+  /* Scroll overflowing content; min-height:0 lets a flex child actually shrink. */
+  overflow-y:auto;min-height:0;flex:1 1 auto;
 }
-.mdl-actions{display:flex;gap:8px;justify-content:flex-end}
+.mdl-actions{display:flex;gap:8px;justify-content:flex-end;flex:0 0 auto}
 
 /* ── Animations ───────────────────────────────────────────────── */
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
