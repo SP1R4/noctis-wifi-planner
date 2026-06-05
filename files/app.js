@@ -43,6 +43,7 @@ import {
   MODEL_IMAGE_PLACEHOLDERS, modelImageUrl, MODEL_IMAGES,
 } from './src/constants.js';
 import {runLengthM,analyzeLoad,nextFreeIp as netNextFreeIp} from './src/network.js';
+import {encryptObject,decryptObject} from './src/crypto.js';
 import {t,setLang,getLang,availableLangs} from './src/i18n.js';
 import {
   idbPutImage, idbGetImage, idbDeleteImage,
@@ -177,6 +178,10 @@ const HINTS={
 // DEFAULT_SETTINGS imported from ./src/migrate.js (single source of truth).
 // Clone vlans so we never mutate the shared DEFAULT_SETTINGS array.
 let SETTINGS={...DEFAULT_SETTINGS,vlans:[]};
+// Session-only credentials passphrase. When set, device credentials are
+// AES-GCM encrypted in saved/exported project files and stripped from autosave
+// and Share links. Never persisted to SETTINGS or disk.
+let _credPass='';
 
 // ═══ STATE ════════════════════════════════════════
 let FLOORS=[{id:'f1',name:'Floor 1',img:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],ANNOS:[],SAMPLES:[],scaleM:100}];
@@ -206,6 +211,7 @@ let resId=null,resizeStartX=0,resizeStartR=0;
 let rulerStart=null;      // {x,y} in image coords, once the user has placed the first point
 let rulerEnd=null;        // {x,y} once two clicks have happened; null while still hovering
 let rulerHover=null;      // {x,y} current pointer position while waiting for 2nd click
+let calibratePending=false; // next completed ruler line opens the scale-calibration prompt
 // Wall (draw tool)
 let wallStart=null;       // {x,y} in image coords
 let wallHover=null;       // {x,y} while dragging out second point
@@ -1174,10 +1180,63 @@ async function saveProject(){
   }));
   // scaleM is now stored per-floor; project-level field omitted.
   const data={version:PROJECT_VERSION,settings:SETTINGS,floors:floorsForExport,revisions:PROJECT_REVISIONS,savedAt:new Date().toISOString()};
+  // When a credentials passphrase is set, encrypt every device's creds into a
+  // single vault and strip the plaintext from the exported devices.
+  await _encryptCredsInto(data);
   const blob=new Blob([JSON.stringify(data,_stripCacheReplacer,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
   a.download='noctis_project.json';a.click();
-  toast('Project saved');
+  toast(_credPass?'Project saved (credentials encrypted)':'Project saved');
+}
+// ── Credential vault (encrypt-at-rest for saved/exported projects) ─────────
+// Gather {deviceId: creds} across floors.
+function _collectCreds(floors){
+  const map={};
+  for(const f of (floors||[]))for(const key of ['APS','CAMS','SWS'])
+    for(const d of (f[key]||[]))if(d&&d.creds&&d.id)map[d.id]=d.creds;
+  return map;
+}
+// If a passphrase is set, move creds into data.credsVault and strip the inline
+// plaintext from copies of the affected devices (never mutating live FLOORS).
+async function _encryptCredsInto(data){
+  if(!_credPass)return;
+  const map=_collectCreds(data.floors);
+  if(!Object.keys(map).length)return;
+  data.credsVault=await encryptObject(map,_credPass);
+  for(const f of data.floors)for(const key of ['APS','CAMS','SWS']){
+    if(!Array.isArray(f[key]))continue;
+    f[key]=f[key].map(d=>{if(d&&d.creds){const c={...d};delete c.creds;return c;}return d;});
+  }
+}
+// After loading a project whose creds are encrypted, prompt for the passphrase
+// and reattach the decrypted creds to the in-memory devices.
+async function _unlockCreds(data){
+  if(!data||!data.credsVault)return;
+  const pass=await promptPassphrase('This project’s credentials are encrypted.\nEnter the passphrase to unlock them, or Cancel to keep them locked:');
+  if(pass==null)return;
+  try{
+    const map=await decryptObject(data.credsVault,pass);
+    _credPass=pass;   // remember so a re-save stays encrypted with the same key
+    for(const f of FLOORS)for(const key of ['APS','CAMS','SWS'])
+      for(const d of (f[key]||[]))if(map[d.id])d.creds=map[d.id];
+    render();renderRP();
+    toast('Credentials unlocked');
+  }catch{
+    toast('Wrong passphrase — credentials stay locked');
+  }
+}
+// Modal password prompt → resolves to the string, or null if cancelled.
+function promptPassphrase(message){
+  return new Promise(resolve=>{
+    const wrap=document.createElement('div');wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+    String(message).split('\n').forEach((line,i,arr)=>{wrap.appendChild(document.createTextNode(line));if(i<arr.length-1)wrap.appendChild(document.createElement('br'));});
+    const inp=document.createElement('input');inp.type='password';inp.className='ep-in';inp.autocomplete='off';
+    inp.style.cssText='width:100%;margin-top:10px';
+    wrap.appendChild(inp);
+    let done=false;
+    showModalNode('Credentials passphrase',wrap,()=>{done=true;resolve(inp.value||'');},()=>{if(!done)resolve(null);});
+    setTimeout(()=>inp.focus(),50);
+  });
 }
 
 // Clears all floors and starts a single fresh blank floor.
@@ -1231,6 +1290,7 @@ function loadProject(input){
       applySettingsToBrand();
       loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
       if(warnings.length){toast(warnings[0]);}else{toast('Project loaded');}
+      await _unlockCreds(data);   // prompt for the passphrase if creds are encrypted
     }catch(err){toast('Error loading project: '+(err.message||'invalid file'));}
   };
   reader.readAsText(file);input.value='';
@@ -1586,6 +1646,7 @@ viewport.addEventListener('click',e=>{
       rulerStart={x,y};rulerEnd=null;rulerHover={x,y};
     }else if(!rulerEnd){
       rulerEnd={x,y};
+      if(calibratePending){calibratePending=false;renderRuler();promptCalibration();return;}
       const distM=Math.hypot(rulerEnd.x-rulerStart.x,rulerEnd.y-rulerStart.y)*(scaleM/100);
       toast(`${distM.toFixed(1)} m · Click again for new measurement`);
     }else{
@@ -3310,6 +3371,45 @@ function _calcCoverageNow(){
 // ═══ SCALE ════════════════════════════════════════
 // Per-floor: writes to F().scaleM as well as the global mirror.
 function updateScale(){snapshotSoon();setScaleM(document.getElementById('scale-m').value);updateScaleBar();calcCoverage();render();renderList();renderRP();}
+
+// Calibrate the scale by measuring a known real-world dimension on the plan.
+// Entry point: if a ruler measurement already exists, prompt now; otherwise arm
+// the ruler so the next line the user draws opens the prompt.
+function calibrateScale(){
+  if(rulerStart&&rulerEnd){promptCalibration();return;}
+  calibratePending=true;
+  setMode('ruler');
+  toast('Draw a line over a known dimension to set the scale');
+}
+// Ask for the line's real length, then derive metres-per-100px from its pixels.
+function promptCalibration(){
+  if(!(rulerStart&&rulerEnd))return;
+  const px=Math.hypot(rulerEnd.x-rulerStart.x,rulerEnd.y-rulerStart.y);
+  if(px<2){toast('Line too short — draw a longer one');return;}
+  const wrap=document.createElement('div');
+  wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+  const p=document.createElement('div');
+  p.textContent=`This line is ${px.toFixed(0)} px. Enter its real-world length:`;
+  p.style.marginBottom='8px';
+  const row=document.createElement('div');row.style.cssText='display:flex;gap:6px;align-items:center';
+  const inp=document.createElement('input');
+  inp.type='number';inp.min='0.1';inp.step='0.1';inp.className='ep-in';
+  inp.value=(px*(scaleM/100)).toFixed(1);inp.style.width='130px';
+  const unit=document.createElement('span');unit.textContent='metres';
+  row.append(inp,unit);wrap.append(p,row);
+  showModalNode('Calibrate scale',wrap,()=>{
+    const realM=parseFloat(inp.value);
+    if(!(realM>0)){toast('Enter a positive length');return;}
+    snapshot();
+    const newScale=realM/px*100;            // metres per 100 px
+    setScaleM(newScale);
+    const el=document.getElementById('scale-m');if(el)el.value=Math.round(newScale*100)/100;
+    SETTINGS.archScale='';                   // now a custom, measured scale
+    updateScaleBar();calcCoverage();render();renderList();renderRP();
+    toast(`Scale set: ${newScale.toFixed(2)} m / 100 px`);
+  });
+  setTimeout(()=>{inp.focus();inp.select();},50);
+}
 function updateScaleBar(){
   const bar=document.getElementById('scale-bar');
   if(!scaleM||!mapImg.naturalWidth){bar.style.display='none';return;}
@@ -4562,7 +4662,13 @@ function autosave(){
   // is a few KB even with multi-floor projects.
   if(typeof document!=='undefined'&&document.hidden)return;
   try{
-    const payload=JSON.stringify({version:PROJECT_VERSION,settings:SETTINGS,floors:FLOORS,revisions:PROJECT_REVISIONS,savedAt:new Date().toISOString()},_stripCacheReplacer);
+    // When a credentials passphrase is set, never write plaintext creds to
+    // localStorage — strip them from the autosave payload (the encrypted copy
+    // lives only in explicitly-saved project files).
+    const replacer=_credPass
+      ? (k,v)=>(k.startsWith('_')||k==='creds')?undefined:v
+      : _stripCacheReplacer;
+    const payload=JSON.stringify({version:PROJECT_VERSION,settings:SETTINGS,floors:FLOORS,revisions:PROJECT_REVISIONS,savedAt:new Date().toISOString()},replacer);
     if(payload===lastAutosavePayload)return;  // nothing changed
     localStorage.setItem(AUTOSAVE_KEY,payload);
     lastAutosavePayload=payload;
@@ -4641,6 +4747,7 @@ const CLICK_ACTIONS={
   'toggle-coverage':()=>toggleCoverage(),
   'auto-place':    ()=>autoPlaceAPs(),
   'show-poe':      ()=>showPoESummary(),
+  'calibrate-scale':()=>calibrateScale(),
   'auto-assign-sw':()=>autoAssignSwitches(),
   'show-topology': ()=>showTopology(),
   'show-validation':()=>showValidation(),
@@ -4989,6 +5096,18 @@ function showSettings(){
   addVlanBtn.addEventListener('click',()=>addVlanRow());
   wrap.appendChild(addVlanBtn);
 
+  // ── Security ──
+  addHeading('Security');
+  const credRow=document.createElement('div');credRow.className='ep-row';
+  const credLbl=document.createElement('label');credLbl.className='ep-lbl';credLbl.textContent='Credentials passphrase';
+  const credInp=document.createElement('input');
+  credInp.type='password';credInp.className='ep-in';credInp.autocomplete='new-password';
+  credInp.value=_credPass;credInp.placeholder='blank = store credentials unencrypted';
+  credRow.append(credLbl,credInp);wrap.appendChild(credRow);
+  const credHint=document.createElement('div');credHint.className='ep-hint';
+  credHint.textContent='When set, device credentials are AES-256-GCM encrypted in saved project files and never written to autosave or Share links. Session-only — not stored anywhere; you re-enter it to unlock an encrypted project.';
+  wrap.appendChild(credHint);
+
   const hint=document.createElement('div');
   hint.className='ep-hint';
   hint.textContent='Saved with the project. Used in HTML/PDF exports, the heatmap pipeline, the top-bar brand label, and channel/Tx planning. Routing factor scales straight-line cable runs; VLAN subnets feed the “suggest IP” buttons.';
@@ -5017,6 +5136,8 @@ function showSettings(){
     // VLAN registry.
     const newVlans=vlanRows.map(e=>({id:(e.id.value||'').trim(),name:(e.name.value||'').trim(),color:e.color.value||'',subnet:(e.subnet.value||'').trim()})).filter(v=>v.id||v.name);
     if(JSON.stringify(newVlans)!==JSON.stringify(vlanList())){SETTINGS.vlans=newVlans;changed=true;}
+    // Credentials passphrase (session-only; never persisted to SETTINGS).
+    _credPass=credInp.value||'';
     const opacity=parseInt(opacityIn.value,10)||100;
     if(SETTINGS.coverageOpacity!==opacity){SETTINGS.coverageOpacity=opacity;changed=true;}
     if(SETTINGS.language)setLang(SETTINGS.language);
