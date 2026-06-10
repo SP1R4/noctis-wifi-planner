@@ -75,13 +75,26 @@ async function captureScreenshots(browser) {
   await ctx.close();
 }
 
-async function captureDragVideo(browser) {
+// Playwright's screencast records at CSS-pixel resolution no matter the
+// deviceScaleFactor, which made the old demo.gif soft. Instead, step the drag
+// manually and grab a real 2× screenshot per GIF frame — timing is synthetic
+// (12 fps on encode), so capture speed doesn't matter.
+async function captureDragFrames(browser) {
   const ctx = await browser.newContext({
     viewport: {width: 1280, height: 720},
-    recordVideo: {dir: OUT, size: {width: 1280, height: 720}},
+    deviceScaleFactor: 2,
   });
   const page = await ctx.newPage();
   await loadSample(page);
+
+  const dir = fs.mkdtempSync(path.join(OUT, 'frames-'));
+  let n = 0;
+  const fname = i => path.join(dir, `f${String(i).padStart(3, '0')}.png`);
+  const frame = async (holds = 1) => {
+    await page.screenshot({path: fname(n), animations: 'disabled'});
+    for (let i = 1; i < holds; i++) fs.copyFileSync(fname(n), fname(n + i));
+    n += holds;
+  };
 
   // Drag AP-02 (open office) around — coverage re-clips against the walls
   // live, which is the money shot.
@@ -89,7 +102,7 @@ async function captureDragVideo(browser) {
   const box = await dot.boundingBox();
   const sx = box.x + box.width / 2, sy = box.y + box.height / 2;
   await page.mouse.move(sx, sy);
-  await sleep(600);
+  await frame(6);                          // hold the start state ~0.5 s
   await page.mouse.down();
 
   // Smooth path: into the meeting room (through the glass wall), down past
@@ -102,30 +115,37 @@ async function captureDragVideo(browser) {
     {x: sx + 180, y: sy + 60},
     {x: sx,       y: sy},
   ];
+  let prev = {x: sx, y: sy};
   for (const wp of waypoints) {
-    await page.mouse.move(wp.x, wp.y, {steps: 28});
-    await sleep(250);
+    const steps = 12;
+    for (let i = 1; i <= steps; i++) {
+      await page.mouse.move(prev.x + (wp.x - prev.x) * i / steps,
+                            prev.y + (wp.y - prev.y) * i / steps);
+      await frame();
+    }
+    await frame(2);                        // brief dwell at each waypoint
+    prev = wp;
   }
   await page.mouse.up();
-  await sleep(800);
-
-  await page.close();
-  const video = await page.video().path();
+  await frame(8);                          // settle on the final state
   await ctx.close();
-  return video;
+  return dir;
 }
 
-function webmToGif(webm) {
+function framesToGif(dir) {
   const gif = path.join(OUT, 'demo.gif');
   const palette = path.join(OUT, '_palette.png');
-  // Two-pass palette for a clean GIF at a reasonable size.
-  execFileSync('ffmpeg', ['-y', '-i', webm,
-    '-vf', 'fps=12,scale=960:-1:flags=lanczos,palettegen', palette]);
-  execFileSync('ffmpeg', ['-y', '-i', webm, '-i', palette,
-    '-lavfi', 'fps=12,scale=960:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=4',
+  const input = ['-framerate', '12', '-i', path.join(dir, 'f%03d.png')];
+  // Two-pass palette for a clean GIF. Frames are 2× (2560 px), so 1280 is a
+  // true downscale — crisp text — and the fine bayer dither avoids visible
+  // crosshatch on the flat UI.
+  execFileSync('ffmpeg', ['-y', ...input,
+    '-vf', 'scale=1280:-1:flags=lanczos,palettegen', palette]);
+  execFileSync('ffmpeg', ['-y', ...input, '-i', palette,
+    '-lavfi', 'scale=1280:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5',
     gif]);
   fs.rmSync(palette);
-  fs.rmSync(webm);
+  fs.rmSync(dir, {recursive: true});
   return gif;
 }
 
@@ -136,11 +156,11 @@ try {
   const browser = await chromium.launch();
   console.log('capturing screenshots…');
   await captureScreenshots(browser);
-  console.log('recording drag video…');
-  const webm = await captureDragVideo(browser);
+  console.log('capturing drag frames…');
+  const frames = await captureDragFrames(browser);
   await browser.close();
   console.log('encoding gif…');
-  const gif = webmToGif(webm);
+  const gif = framesToGif(frames);
   for (const f of fs.readdirSync(OUT)) {
     const kb = Math.round(fs.statSync(path.join(OUT, f)).size / 1024);
     console.log(`  docs/media/${f} — ${kb} KB`);
