@@ -3,7 +3,9 @@
 // is available both in the browser/Electron renderer and in Node 18+ (so the
 // round-trip is unit-testable). No dependencies.
 
-const PBKDF2_ITERS = 150000;
+// OWASP-recommended floor for PBKDF2-SHA256 (2023+). Blobs written before the
+// bump decrypt fine — decryptObject reads the iteration count from the blob.
+const PBKDF2_ITERS = 600000;
 
 function bytesToB64(bytes) {
   const b = new Uint8Array(bytes);
