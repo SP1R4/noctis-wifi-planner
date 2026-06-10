@@ -302,3 +302,75 @@ describe('WALL_MATERIALS table',()=>{
     expect(brick.loss).toBeLessThan(concrete.loss);
   });
 });
+
+describe('dbmAt physical model (metersPerPx)',()=>{
+  // 200×200 px image, AP at the centre (100,100), r=100 px.
+  // metersPerPx 0.1 → the AP radius is 10 m.
+  const ap={fx:0.5,fy:0.5,r:100};
+
+  test('free space matches FSPL(1m) + 10·n·log10(d) exactly',()=>{
+    // 50 px = 5 m, 2.4 GHz (2437 MHz), logd n=2.2, default EIRP 20 dBm.
+    const d=dbmAt({...ap,freq:'2.4 GHz only'},150,100,200,200,[],{metersPerPx:0.1});
+    const pl=20*Math.log10(2437)-27.55 + 22*Math.log10(5);
+    expect(d).toBeCloseTo(20-pl,6);
+  });
+  test('5 GHz reads ~7 dB weaker than 2.4 GHz at the same distance',()=>{
+    const d24=dbmAt({...ap,freq:'2.4 GHz only'},150,100,200,200,[],{metersPerPx:0.1});
+    const d5 =dbmAt({...ap,freq:'5 GHz only'},  150,100,200,200,[],{metersPerPx:0.1});
+    expect(d24-d5).toBeCloseTo(20*Math.log10(5500/2437),4);
+  });
+  test('freqMhz override beats the band label',()=>{
+    const viaLabel=dbmAt({...ap,freq:'5 GHz only'},150,100,200,200,[],{metersPerPx:0.1});
+    const viaOverride=dbmAt({...ap,freq:'2.4 GHz only'},150,100,200,200,[],{metersPerPx:0.1,freqMhz:5500});
+    expect(viaOverride).toBeCloseTo(viaLabel,6);
+  });
+  test('signal decays monotonically with distance',()=>{
+    const near=dbmAt(ap,110,100,200,200,[],{metersPerPx:0.1});
+    const far =dbmAt(ap,180,100,200,200,[],{metersPerPx:0.1});
+    expect(near).toBeGreaterThan(far);
+  });
+  test('a wall subtracts exactly its material loss',()=>{
+    const walls=[{x1:110,y1:0,x2:110,y2:200,material:'drywall'}];
+    const open=dbmAt(ap,150,100,200,200,[],{metersPerPx:0.1});
+    const blocked=dbmAt(ap,150,100,200,200,walls,{metersPerPx:0.1});
+    expect(open-blocked).toBeCloseTo(3,6);
+  });
+  test('eirpDbm override shifts the reading 1:1',()=>{
+    const base=dbmAt(ap,150,100,200,200,[],{metersPerPx:0.1});
+    const hot =dbmAt(ap,150,100,200,200,[],{metersPerPx:0.1,eirpDbm:26});
+    expect(hot-base).toBeCloseTo(6,6);
+  });
+  test('itu-indoor (n=3.0) decays faster than multi-wall (n=2.0)',()=>{
+    const mw =dbmAt(ap,180,100,200,200,[],{metersPerPx:0.1,model:'multi-wall'});
+    const itu=dbmAt(ap,180,100,200,200,[],{metersPerPx:0.1,model:'itu-indoor'});
+    expect(itu).toBeLessThan(mw);
+  });
+  test('near-field is floored at 0.5 m (no +∞ at the AP)',()=>{
+    const atAp=dbmAt(ap,100,100,200,200,[],{metersPerPx:0.1});
+    expect(Number.isFinite(atAp)).toBe(true);
+  });
+  test('absent or zero metersPerPx falls back to the per-radius heuristic',()=>{
+    const heuristic=dbmAt(ap,120,100,200,200,[]);
+    expect(dbmAt(ap,120,100,200,200,[],{metersPerPx:0})).toBeCloseTo(heuristic,9);
+    expect(dbmAt(ap,120,100,200,200,[],{metersPerPx:NaN})).toBeCloseTo(heuristic,9);
+  });
+  test('dbmAtThroughSlab physical: slab dB subtracted exactly',()=>{
+    const direct=dbmAtThroughSlab(ap,140,100,200,200,0,1.0,'logd',0.1);
+    const slabbed=dbmAtThroughSlab(ap,140,100,200,200,3,1.0,'logd',0.1);
+    expect(direct-slabbed).toBeCloseTo(3,6);
+    // And the direct value matches the free-space physical formula (5.5 GHz default).
+    const pl=20*Math.log10(5500)-27.55 + 22*Math.log10(4);
+    expect(direct).toBeCloseTo(20-pl,6);
+  });
+  test('sampleRoamingOverlap honours floor.scaleM without breaking shape',()=>{
+    const floor={
+      scaleM:50,
+      APS:[{fx:0.4,fy:0.5,r:100,freq:'5 GHz only'},{fx:0.6,fy:0.5,r:100,freq:'5 GHz only'}],
+      WALLS:[],
+    };
+    const res=sampleRoamingOverlap(floor,200,200);
+    expect(res.total).toBeGreaterThan(0);
+    expect(res.covered).toBeGreaterThanOrEqual(0);
+    expect(res.covered).toBeLessThanOrEqual(res.total);
+  });
+});

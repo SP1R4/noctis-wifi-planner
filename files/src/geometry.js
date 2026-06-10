@@ -28,6 +28,11 @@
  * @property {number=} eirpDbm    EIRP override. If absent, derived from txPower+gain-cable.
  * @property {number=} noiseFloorDbm  Noise floor for SNR/MCS. Default -95 dBm.
  * @property {string=} model      Propagation model key (see PROPAGATION_MODELS).
+ * @property {number=} metersPerPx  Real-world scale. When present and > 0, dBm is
+ *                                  computed with physical path loss (FSPL at the
+ *                                  band's frequency + model exponent + wall dB)
+ *                                  instead of the per-radius heuristic.
+ * @property {number=} freqMhz    Carrier frequency override for the physical model.
  */
 
 // Wall-material attenuation table. `loss` is approximate signal attenuation
@@ -58,6 +63,23 @@ export function bandLossMultiplier(freq){
   return BAND_LOSS[freq]??1.0;
 }
 
+// Representative carrier frequency per band label, used by the physical
+// path-loss model. Dual-band APs use the 2.4 GHz value to stay consistent
+// with BAND_LOSS, which treats them as 2.4 GHz for wall penetration.
+export const FREQ_MHZ={
+  '2.4 GHz only':    2437,  // channel 6 centre
+  '2.4 / 5 GHz':     2437,
+  '5 GHz only':      5500,  // mid U-NII
+  '6 GHz (WiFi 6E)': 6525,  // mid 6 GHz band
+};
+/**
+ * @param {string=} freq
+ * @returns {number}
+ */
+export function bandFreqMhz(freq){
+  return FREQ_MHZ[freq]??5500;
+}
+
 // Propagation-model path-loss "exponent" in dB across one AP radius. Bigger
 // values = signal decays faster with distance. Mirrors `PROPAGATION_MODELS`
 // in constants.js but is kept here too so geometry.js stays DOM-/UI-free.
@@ -69,6 +91,35 @@ export const PROP_EXPONENT={
   'itu-indoor': 30,
   'multi-wall': 32,
 };
+
+// Physical path-loss exponents (n in 10·n·log10(d)) used when a real-world
+// scale (metersPerPx) is supplied. Walls are always added explicitly on top,
+// so these reflect *clutter between walls*, not wall penetration:
+//  - logd:       lightly cluttered indoor line-of-sight (n ≈ 2.2)
+//  - itu-indoor: ITU-R P.1238 office (power-loss coefficient N=30 → n = 3.0;
+//                P.1238 folds light obstructions into the exponent)
+//  - multi-wall: COST-231 multi-wall = pure free space (n = 2.0) + explicit
+//                per-wall loss terms, which is exactly our wall model
+export const PROP_N={
+  'logd':       2.2,
+  'itu-indoor': 3.0,
+  'multi-wall': 2.0,
+};
+
+// Log-distance path loss in dB at distance dM metres and carrier fMhz MHz:
+// FSPL(1 m) + 10·n·log10(d). FSPL(1 m) = 20·log10(f_MHz) − 27.55 (d in m).
+// Distance is floored at 0.5 m to avoid the near-field singularity.
+/**
+ * @param {number} dM
+ * @param {number} fMhz
+ * @param {string=} modelKey
+ * @returns {number}
+ */
+export function pathLossDb(dM,fMhz,modelKey){
+  const n=PROP_N[modelKey??'logd']??PROP_N.logd;
+  const d=Math.max(0.5,dM);
+  return 20*Math.log10(fMhz)-27.55 + 10*n*Math.log10(d);
+}
 const DEFAULT_NOISE_FLOOR_DBM=-95;
 
 // 802.11ac/ax MCS minimum-SNR thresholds (dB) for a single spatial stream.
@@ -260,6 +311,14 @@ export function dbmAt(ap,sx,sy,imgW,imgH,walls,opts){
     }
   }
   if(dist > ap.r*attenuationFactor(lossDb))return null;
+  // Physical model: real FSPL at the band's carrier + model exponent + wall dB.
+  // Activated by a metersPerPx scale; the per-radius heuristic remains the
+  // fallback so unscaled projects keep their previous behaviour.
+  const mpp=(opts&&typeof opts==='object'&&Number.isFinite(opts.metersPerPx)&&opts.metersPerPx>0)?opts.metersPerPx:null;
+  if(mpp){
+    const fMhz=(opts&&typeof opts==='object'&&Number.isFinite(opts.freqMhz))?opts.freqMhz:bandFreqMhz(ap.freq);
+    return eirp - pathLossDb(dist*mpp,fMhz,modelKey) - lossDb;
+  }
   const dRatio=Math.max(0.05,dist/ap.r);
   const fsLoss=pe*Math.log10(1/dRatio);
   return edgeDbm + fsLoss - lossDb + eirpBoost;
@@ -367,7 +426,7 @@ export function sampleFloorCoverage(floor,imgW,imgH){
 // Sample a floor for roaming overlap: % of sample points where ≥2 APs deliver
 // ≥ thresholdDbm. Returns {covered, total}.
 /**
- * @param {{APS?:APLike[],WALLS?:WallLike[]}} floor
+ * @param {{APS?:APLike[],WALLS?:WallLike[],scaleM?:number}} floor
  * @param {number} imgW @param {number} imgH
  * @param {number=} thresholdDbm
  * @returns {{covered:number,total:number}}
@@ -377,13 +436,16 @@ export function sampleRoamingOverlap(floor,imgW,imgH,thresholdDbm=-67){
   if(aps.length<2)return {covered:0,total:0};
   const walls=floor.WALLS||[];
   const w=imgW||1,h=imgH||1;
+  // Use the floor's real-world scale (m per 100 px) when present so the
+  // overlap stats agree with the physical heatmap.
+  const mpp=(Number.isFinite(floor.scaleM)&&floor.scaleM>0)?floor.scaleM/100:undefined;
   const step=Math.max(4,Math.round(Math.min(w,h)/60));
   let total=0,covered=0;
   for(let x=0;x<w;x+=step)for(let y=0;y<h;y+=step){
     total++;
     let n=0;
     for(const ap of aps){
-      const d=dbmAt(ap,x,y,w,h,walls,{bandFactor:bandLossMultiplier(ap.freq)});
+      const d=dbmAt(ap,x,y,w,h,walls,{bandFactor:bandLossMultiplier(ap.freq),metersPerPx:mpp});
       if(d!==null && d>=thresholdDbm){n++;if(n>=2)break;}
     }
     if(n>=2)covered++;
@@ -402,9 +464,10 @@ export function sampleRoamingOverlap(floor,imgW,imgH,thresholdDbm=-67){
  * @param {number} slabDb  Slab attenuation in dB per slab traversed.
  * @param {number=} bandFactor
  * @param {string=} modelKey  Propagation model key.
+ * @param {number=} metersPerPx  Real-world scale → physical path loss (see dbmAt).
  * @returns {number|null}
  */
-export function dbmAtThroughSlab(ap,sx,sy,imgW,imgH,slabDb,bandFactor,modelKey){
+export function dbmAtThroughSlab(ap,sx,sy,imgW,imgH,slabDb,bandFactor,modelKey,metersPerPx){
   const bf=bandFactor??1;
   const pe=PROP_EXPONENT[modelKey||'logd']??PROP_EXPONENT.logd;
   const eirp=effectiveEirp(ap);
@@ -418,6 +481,9 @@ export function dbmAtThroughSlab(ap,sx,sy,imgW,imgH,slabDb,bandFactor,modelKey){
   // 2.4 GHz penetrates slabs better than 5 GHz, just like walls.
   const effSlab=slabDb*bf;
   if(dist > ap.r*attenuationFactor(effSlab))return null;
+  if(Number.isFinite(metersPerPx)&&metersPerPx>0){
+    return eirp - pathLossDb(dist*metersPerPx,bandFreqMhz(ap.freq),modelKey) - effSlab;
+  }
   const fsLoss=pe*Math.log10(1/dRatio);
   return edgeDbm + fsLoss - effSlab + eirpBoost;
 }
