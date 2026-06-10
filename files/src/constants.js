@@ -699,6 +699,18 @@ export const ROAMING_OVERLAP_DBM=-67;
 // slab with rebar at 5 GHz. User-configurable per-project.
 export const DEFAULT_FLOOR_SLAB_DB=18;
 
+// ── Device install status ──────────────────────────────────────────────────
+// Rollout lifecycle for APs / cameras / switches. Order matters: it's the
+// chronological pipeline, and "progress" = how far right the fleet has moved.
+export const DEVICE_STATUSES=['planned','ordered','installed','tested','live'];
+export const DEVICE_STATUS_META={
+  planned:   {label:'Planned',   color:'#8a8a8a'},
+  ordered:   {label:'Ordered',   color:'#b8860b'},
+  installed: {label:'Installed', color:'#1565c0'},
+  tested:    {label:'Tested',    color:'#6a1b9a'},
+  live:      {label:'Live',      color:'#1e7d3c'},
+};
+
 // Curated AP color palette — chosen to read clearly on the cream Plexus canvas.
 // Empty value means "use default ink (#000)".
 export const AP_COLORS=[

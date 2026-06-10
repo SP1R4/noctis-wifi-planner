@@ -574,6 +574,27 @@ body.sb-resizing iframe{pointer-events:none}
 .sb-search-clear:active{transform:translateY(-50%) scale(.85)}
 /* Visible when search-row has the .has-text class (set by JS) */
 .sb-search-row.has-text .sb-search-clear{display:inline-flex}
+/* Install-status filter under the search box */
+.sb-status-row{
+  padding:0 10px 8px;
+  border-bottom:1px solid var(--hair);
+  background:var(--bg);
+}
+.sb-status{
+  width:100%;padding:5px 8px;
+  background:var(--ink-04);
+  border:1px solid transparent;border-radius:var(--r-2);
+  color:var(--ink);
+  font-family:'Rajdhani',sans-serif;font-size:11px;
+  outline:none;cursor:pointer;
+}
+.sb-status:hover{background:var(--ink-08)}
+.sb-status:focus{background:var(--bg);border-color:var(--ink-30)}
+/* Per-device install-status dot next to the item name */
+.li-status{
+  display:inline-block;width:6px;height:6px;border-radius:50%;
+  margin-left:6px;vertical-align:middle;flex:0 0 auto;
+}
 /* "No matches" message styling — reuses .empty-msg base */
 .no-match-msg{
   font-size:12px;font-family:'Rajdhani',sans-serif;
@@ -1141,6 +1162,8 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
 
 /* ── Help overlay (modal) ─────────────────────────────────────── */
 #mdl.help-modal{max-width:560px;width:92%}
+/* Inventory & rollout: a real table needs real width */
+#mdl.wide-modal{max-width:920px;width:94%}
 .help-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px 28px}
 .help-sec{display:flex;flex-direction:column;gap:6px}
 .help-h{

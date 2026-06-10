@@ -84,6 +84,7 @@ const AP_BASE={
   freq:'2.4 / 5 GHz',channel:'auto',txPower:'auto',sig:'strong',color:'',
   mac:'',notes:'',comment:'',locked:false,pattern:'omni',heading:0,
   cableLossDb:0,txPowerDbm:20,mountHeightM:2.7,downtiltDeg:0,capacityClients:25,
+  status:'planned',serial:'',assetTag:'',firmware:'',
 };
 
 /**
@@ -102,26 +103,33 @@ export function buildSampleProject(){
   // full-power APs spill far past the exterior walls and the coverage
   // outlines swamp the plan. A real designer would turn Tx power down too.
   const aps=[
+    // Mixed install statuses so the inventory/rollout view has a story to tell.
     {...AP_BASE,id:'ap14',name:'AP-01',model:'U6 Pro', r:mToPx(17),fx:f(230,W),fy:f(180,H),
-     ip:'10.0.10.11',vlan:'10',swId:'sw17',port:'1',antennaGainDbi:3},
+     ip:'10.0.10.11',vlan:'10',swId:'sw17',port:'1',antennaGainDbi:3,
+     status:'live',serial:'UAP6P-2231A41',assetTag:'PLX-0001',firmware:'6.6.55'},
     {...AP_BASE,id:'ap15',name:'AP-02',model:'U6 Pro', r:mToPx(18),fx:f(690,W),fy:f(300,H),
-     ip:'10.0.10.12',vlan:'10',swId:'sw17',port:'2',antennaGainDbi:3},
+     ip:'10.0.10.12',vlan:'10',swId:'sw17',port:'2',antennaGainDbi:3,
+     status:'installed',serial:'UAP6P-2231A42',assetTag:'PLX-0002'},
     {...AP_BASE,id:'ap16',name:'AP-03',model:'U6 Lite',r:mToPx(13),fx:f(230,W),fy:f(640,H),
-     ip:'10.0.10.13',vlan:'10',swId:'sw17',port:'3',antennaGainDbi:3},
+     ip:'10.0.10.13',vlan:'10',swId:'sw17',port:'3',antennaGainDbi:3,
+     status:'planned'},
   ];
   const sws=[
-    {id:'sw17',name:'SW-1',model:'USW-24-PoE',ip:'10.0.1.2',notes:'Server room rack',
-     fx:f(1055,W),fy:f(150,H),size:22,locked:false,poeBudget:95,ports:0,uplinkId:''},
+    {id:'sw17',name:'SW-01',model:'USW-24-PoE',ip:'10.0.1.2',notes:'Server room rack',
+     fx:f(1055,W),fy:f(150,H),size:22,locked:false,poeBudget:95,ports:0,uplinkId:'',
+     status:'live',serial:'USW24P-77001',assetTag:'PLX-0010',firmware:'7.1.26',mac:''},
   ];
   const cams=[
     // Camera ranges trimmed below spec so the FoV cones stay readable on a
     // building this size (the cone is a sightline, not a wall-clipped shape).
     {id:'cm18',name:'CAM-01',model:'G5 Dome',fx:f(70,W),fy:f(70,H),
      fov:102,range:mToPx(10),heading:45,resolution:'4MP',
-     ip:'10.0.20.21',mac:'',swId:'sw17',port:'5',vlan:'20',notes:'',color:'',locked:false},
+     ip:'10.0.20.21',mac:'',swId:'sw17',port:'5',vlan:'20',notes:'',color:'',locked:false,
+     status:'tested',serial:'G5D-91002',assetTag:'PLX-0020'},
     {id:'cm19',name:'CAM-02',model:'G5 Bullet',fx:f(1130,W),fy:f(730,H),
      fov:103,range:mToPx(13),heading:225,resolution:'4MP',
-     ip:'10.0.20.22',mac:'',swId:'sw17',port:'6',vlan:'20',notes:'',color:'',locked:false},
+     ip:'10.0.20.22',mac:'',swId:'sw17',port:'6',vlan:'20',notes:'',color:'',locked:false,
+     status:'ordered'},
   ];
   const dzs=[
     {id:'dz20',label:'Dead Zone 1',fx:f(1055,W),fy:f(660,H),r:40,locked:false},
@@ -139,6 +147,14 @@ export function buildSampleProject(){
       // (multi-wall, n=2.0) leaves the whole floor in the top RSSI band —
       // the office exponent gives the heatmap a realistic gradient.
       propagationModel:'itu-indoor',
+      // Organization demo: subnet-backed VLANs (feeds IP+ / the IP plan) and
+      // a naming convention every sample device already follows.
+      vlans:[
+        {id:'1', name:'Mgmt',    color:'#6a1b9a',subnet:'10.0.1.0/24'},
+        {id:'10',name:'Corp',    color:'#1565c0',subnet:'10.0.10.0/24'},
+        {id:'20',name:'Cameras', color:'#00838f',subnet:'10.0.20.0/24'},
+      ],
+      namePattern:'{type}-{nn}',
     },
     floors:[{
       id:'f1',name:'Ground Floor',

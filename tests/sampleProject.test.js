@@ -1,7 +1,9 @@
 import {describe,test,expect} from 'vitest';
 import {buildSampleProject,sampleFloorPlanDataUrl} from '../files/src/sampleProject.js';
 import {migrateProject,PROJECT_VERSION,syncNidFromFloors} from '../files/src/migrate.js';
-import {AP_RANGE_M,CAM_SPECS,SW_POE_BUDGET_W} from '../files/src/constants.js';
+import {AP_RANGE_M,CAM_SPECS,SW_POE_BUDGET_W,DEVICE_STATUSES} from '../files/src/constants.js';
+import {ipInCidr} from '../files/src/network.js';
+import {nameMatches} from '../files/src/naming.js';
 import {WALL_MATERIALS} from '../files/src/geometry.js';
 
 describe('buildSampleProject',()=>{
@@ -61,6 +63,34 @@ describe('buildSampleProject',()=>{
     // No external fetches (href/url() resources) — must render offline from
     // file://. The xmlns namespace URI is an identifier, not a fetch.
     expect(svg).not.toMatch(/href=|url\(/);
+  });
+  test('statuses are valid and the rollout is mid-flight (demo value)',()=>{
+    const f=buildSampleProject().floors[0];
+    const devs=[...f.APS,...f.CAMS,...f.SWS];
+    for(const d of devs)expect(DEVICE_STATUSES).toContain(d.status);
+    // At least two distinct statuses so the inventory view shows a story.
+    expect(new Set(devs.map(d=>d.status)).size).toBeGreaterThanOrEqual(2);
+  });
+  test('every device IP sits inside its VLAN subnet',()=>{
+    const p=buildSampleProject();
+    const vlans=Object.fromEntries(p.settings.vlans.map(v=>[v.id,v]));
+    const f=p.floors[0];
+    for(const d of [...f.APS,...f.CAMS]){
+      if(!d.ip)continue;
+      const v=vlans[d.vlan];
+      expect(v,`VLAN ${d.vlan} missing from registry`).toBeDefined();
+      expect(ipInCidr(d.ip,v.subnet),`${d.name} ${d.ip} outside ${v.subnet}`).toBe(true);
+    }
+  });
+  test('every device name follows the bundled naming convention',()=>{
+    const p=buildSampleProject();
+    const f=p.floors[0];
+    for(const [list,type] of [[f.APS,'AP'],[f.CAMS,'CAM'],[f.SWS,'SW']]){
+      for(const d of list){
+        expect(nameMatches(d.name,p.settings.namePattern,{site:'',floor:1,type}),
+          `${d.name} breaks ${p.settings.namePattern}`).toBe(true);
+      }
+    }
   });
   test('returns a fresh object every call (no shared mutable state)',()=>{
     const a=buildSampleProject(), b=buildSampleProject();

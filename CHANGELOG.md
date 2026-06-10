@@ -4,6 +4,40 @@ All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Organization tools — Plexus as the system of record for the install, not just
+the coverage picture.
+
+### Added
+- **Inventory & rollout view** (▤ Inventory): a flat, searchable table of every
+  AP/camera/switch across floors with serial, asset tag, firmware and IP, plus
+  per-device **install status** (planned → ordered → installed → tested → live)
+  editable inline. Status shows as a colored dot in the sidebar list, and a
+  sidebar filter dims non-matching devices on the map.
+- **IPAM upgrades**: Validate now flags IPs outside their VLAN's subnet and
+  warns when a subnet pool is ≥90 % full; "IP+ all" bulk-fills every empty IP
+  from its VLAN subnet; new **IP plan CSV** export.
+- **Port map CSV**: one row per switch port — free ports included — with the
+  connected device, IP, VLAN and PoE draw.
+- **Naming convention**: set a pattern like `{site}-F{floor}-{type}{nn}` in
+  Settings → Organization; Validate flags violations and one click renames
+  the whole building to match.
+- **Design baseline & as-built diff**: mark any revision as the ★ baseline and
+  diff it (or any revision) against the *current* state — now including field
+  changes (status, IP, VLAN, port, model, serial, channel, Tx) rather than
+  only adds/removes/moves.
+- **Handover pack** (⇩ Handover): one zip with an HTML summary plus the
+  inventory, IP plan, port map, BoM and cable-schedule CSVs — built by a
+  dependency-free STORE zip writer.
+- Install sheets now carry serial, asset tag and install status.
+- Project schema v9 (status/serial/assetTag/firmware/mac on devices, baseline
+  flag on revisions, siteCode/namePattern settings); older files migrate
+  automatically and the sample project demos the new fields.
+
+### Changed
+- Demo GIF re-captured at 2× pixel density — sharper and 60 % smaller.
+
 ## [3.4.0] — 2026-06-10
 
 Live demo, real physics, security hardening.

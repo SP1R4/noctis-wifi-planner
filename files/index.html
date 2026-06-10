@@ -43,6 +43,8 @@
     <button class="btn" data-action="export-bom" title="Export Bill of Materials (CSV)">≡ BoM</button>
     <button class="btn" data-action="export-cables" title="Export cable schedule (CSV)">∼ Cables CSV</button>
     <button class="btn" data-action="install-sheets" title="Per-AP install sheets PDF">⎙ Install sheets</button>
+    <button class="btn" data-action="show-inventory" title="As-built inventory, rollout status & organization tools">▤ Inventory</button>
+    <button class="btn" data-action="handover-pack" title="Zip the HTML summary + every CSV deliverable">⇩ Handover</button>
     <button class="btn btn-icon-only" id="btn-theme" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle theme">☾</button>
     <button class="btn btn-icon-only" data-action="show-revisions" title="Project revisions" aria-label="Revisions">⟲</button>
     <button class="btn btn-icon-only" data-action="show-plugins" title="Custom vendor catalogs" aria-label="Plugins">+</button>
@@ -148,6 +150,16 @@
       <div class="sb-search-row">
         <input type="text" id="sb-search" class="sb-search" placeholder="Search items…" data-input-action="sb-search" autocomplete="off"/>
         <button class="sb-search-clear" id="sb-search-clear" data-action="sb-search-clear" title="Clear search" aria-label="Clear search">×</button>
+      </div>
+      <div class="sb-status-row">
+        <select id="sb-status" class="sb-status" data-input-action="status-filter" title="Filter devices by install status" aria-label="Filter by status">
+          <option value="">All statuses</option>
+          <option value="planned">Planned</option>
+          <option value="ordered">Ordered</option>
+          <option value="installed">Installed</option>
+          <option value="tested">Tested</option>
+          <option value="live">Live</option>
+        </select>
       </div>
       <div class="sb-scroll" id="left-list"></div>
       <div class="sb-resize-handle" id="sb-resize-handle" aria-label="Resize sidebar"></div>

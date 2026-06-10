@@ -6,6 +6,9 @@ import {
   intToIp,
   nextFreeIp,
   cableBoxCount,
+  parseCidr,
+  ipInCidr,
+  subnetUsage,
 } from '../files/src/network.js';
 
 describe('runLengthM', () => {
@@ -111,5 +114,48 @@ describe('cableBoxCount', () => {
     expect(cableBoxCount(1, 305)).toBe(1);
     expect(cableBoxCount(305, 305)).toBe(1);
     expect(cableBoxCount(306, 305)).toBe(2);
+  });
+});
+
+describe('parseCidr / ipInCidr', () => {
+  it('parses a /24 and reports usable capacity', () => {
+    const c = parseCidr('10.0.10.0/24');
+    expect(c).not.toBeNull();
+    expect(c.size).toBe(256);
+    expect(c.capacity).toBe(253); // minus network, gateway, broadcast
+  });
+  it('rejects malformed CIDRs', () => {
+    expect(parseCidr('')).toBeNull();
+    expect(parseCidr('10.0.10.0')).toBeNull();
+    expect(parseCidr('10.0.10.0/31')).toBeNull();
+    expect(parseCidr('999.0.0.0/24')).toBeNull();
+  });
+  it('checks membership against the network base, not the literal base', () => {
+    // 10.0.10.99/24 normalises to the 10.0.10.0 network.
+    expect(ipInCidr('10.0.10.7', '10.0.10.99/24')).toBe(true);
+    expect(ipInCidr('10.0.11.7', '10.0.10.0/24')).toBe(false);
+    expect(ipInCidr('not-an-ip', '10.0.10.0/24')).toBe(false);
+    expect(ipInCidr('10.0.10.7', 'nope')).toBe(false);
+  });
+});
+
+describe('subnetUsage', () => {
+  it('counts only addresses inside the subnet, deduplicated', () => {
+    const u = subnetUsage('10.0.10.0/24', ['10.0.10.2', '10.0.10.2', '10.0.10.3', '192.168.1.5', '']);
+    expect(u.used).toBe(2);
+    expect(u.capacity).toBe(253);
+    expect(u.pct).toBe(1);
+  });
+  it('reports a nearly-full pool', () => {
+    // /29 ⇒ size 8, capacity 5 (idx 2..6).
+    const ips = ['10.0.0.2', '10.0.0.3', '10.0.0.4', '10.0.0.5', '10.0.0.6'];
+    const u = subnetUsage('10.0.0.0/29', ips);
+    expect(u.used).toBe(5);
+    expect(u.capacity).toBe(5);
+    expect(u.pct).toBe(100);
+  });
+  it('returns null for an unusable CIDR but not for a tiny one', () => {
+    expect(subnetUsage('', [])).toBeNull();
+    expect(subnetUsage('10.0.0.0/30', []).capacity).toBe(1); // /30 still has one offerable host
   });
 });

@@ -72,6 +72,43 @@ export function nextFreeIp(cidr, used = [], maxScan = 4094) {
   return '';
 }
 
+// Parse "10.0.10.0/24" → {net, bits, size, capacity} or null. `capacity` is
+// the usable host count under the same policy as nextFreeIp: network (.0),
+// gateway (.1) and broadcast are reserved.
+export function parseCidr(cidr) {
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/.exec(String(cidr || '').trim());
+  if (!m) return null;
+  const base = ipToInt(`${m[1]}.${m[2]}.${m[3]}.${m[4]}`);
+  if (base == null) return null;
+  const bits = parseInt(m[5], 10);
+  if (bits < 1 || bits > 30) return null;
+  const size = 2 ** (32 - bits);
+  const net = base & (~(size - 1) >>> 0);
+  return { net, bits, size, capacity: Math.max(0, size - 3) };
+}
+
+// Is `ip` a host address inside `cidr`? (false for malformed input)
+export function ipInCidr(ip, cidr) {
+  const c = parseCidr(cidr);
+  const n = ipToInt(ip);
+  if (!c || n == null) return false;
+  return (n & (~(c.size - 1) >>> 0)) >>> 0 === c.net;
+}
+
+// How full is a subnet? Counts only the `ips` that actually fall inside it.
+// Returns {used, capacity, pct} or null when the CIDR is unusable.
+export function subnetUsage(cidr, ips = []) {
+  const c = parseCidr(cidr);
+  if (!c || !c.capacity) return null;
+  const inside = new Set();
+  for (const ip of ips) {
+    const s = String(ip || '').trim();
+    if (s && ipInCidr(s, cidr)) inside.add(s);
+  }
+  const used = inside.size;
+  return { used, capacity: c.capacity, pct: Math.round((used / c.capacity) * 100) };
+}
+
 // Boxes of cable needed for a total length, given metres per box.
 export function cableBoxCount(totalM, boxM = 305) {
   if (!(totalM > 0)) return 0;

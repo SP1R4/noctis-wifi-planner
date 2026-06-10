@@ -266,3 +266,50 @@ describe('nextNameSuffix',()=>{
     expect(nextNameSuffix(items,/^AP-(\d+)/)).toBe(3);
   });
 });
+
+describe('migrateProject — v8 → v9 (install status, inventory, naming, baselines)',()=>{
+  const floors=()=>[{
+    APS:[{id:'ap1',fx:.5,fy:.5,r:80}],
+    SWS:[{id:'sw1',name:'SW-1'}],
+    CAMS:[{id:'cm1',fx:.5,fy:.5}],
+    DZS:[],WALLS:[],
+  }];
+  test('devices gain status + inventory fields',()=>{
+    const [data]=migrateProject({version:8,floors:floors()});
+    for(const d of [data.floors[0].APS[0],data.floors[0].SWS[0],data.floors[0].CAMS[0]]){
+      expect(d.status).toBe('planned');
+      expect(d.serial).toBe('');
+      expect(d.assetTag).toBe('');
+      expect(d.firmware).toBe('');
+      expect(d.mac).toBe('');
+    }
+  });
+  test('explicit status and inventory values survive',()=>{
+    const [data]=migrateProject({version:9,floors:[{APS:[{id:'ap1',fx:.5,fy:.5,r:80,status:'live',serial:'S123',assetTag:'A-9',firmware:'6.5.28',mac:'aa:bb:cc:dd:ee:ff'}],DZS:[],SWS:[],WALLS:[]}]});
+    const ap=data.floors[0].APS[0];
+    expect(ap.status).toBe('live');
+    expect(ap.serial).toBe('S123');
+    expect(ap.assetTag).toBe('A-9');
+    expect(ap.firmware).toBe('6.5.28');
+    expect(ap.mac).toBe('aa:bb:cc:dd:ee:ff');
+  });
+  test('an unknown status is reset to planned',()=>{
+    const [data]=migrateProject({version:9,floors:[{APS:[{id:'ap1',fx:.5,fy:.5,r:80,status:'shipped'}],DZS:[],SWS:[],WALLS:[]}]});
+    expect(data.floors[0].APS[0].status).toBe('planned');
+  });
+  test('revisions gain a baseline flag, existing flags survive',()=>{
+    const [data]=migrateProject({version:8,revisions:[{id:'rev1',name:'a',snapshot:[]},{id:'rev2',name:'b',snapshot:[],baseline:true}],floors:floors()});
+    expect(data.revisions[0].baseline).toBe(false);
+    expect(data.revisions[1].baseline).toBe(true);
+  });
+  test('siteCode and namePattern settings default to empty strings',()=>{
+    const [data]=migrateProject({version:8,floors:floors()});
+    expect(data.settings.siteCode).toBe('');
+    expect(data.settings.namePattern).toBe('');
+  });
+  test('PROJECT_VERSION is stamped',()=>{
+    const [data]=migrateProject({version:8,floors:floors()});
+    expect(data.version).toBe(PROJECT_VERSION);
+    expect(PROJECT_VERSION).toBe(9);
+  });
+});

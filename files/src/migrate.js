@@ -2,9 +2,9 @@
 // unit-tested without booting the DOM/app shell.
 
 import {WALL_MATERIALS} from './geometry.js';
-import {AP_ANTENNA_GAIN_DBI} from './constants.js';
+import {AP_ANTENNA_GAIN_DBI,DEVICE_STATUSES} from './constants.js';
 
-export const PROJECT_VERSION=8;
+export const PROJECT_VERSION=9;
 
 // Settings that apply project-wide (branding, RF assumptions, region, defaults).
 // `coverageOpacity` / `lastModel` are user-preference style and live here too.
@@ -37,6 +37,9 @@ export const DEFAULT_SETTINGS={
   colorByVlan:      false,            // tint devices on the map by their VLAN colour
   vlans:            [],               // [{id,name,color,subnet}] VLAN registry
   customCatalog:    '',               // JSON string of merged custom vendor models
+  // v9 (schema) additions — organization features
+  siteCode:         '',               // short site tag for the naming convention, e.g. "HQ"
+  namePattern:      '',               // device naming convention, e.g. "{site}-F{floor}-{type}{nn}"
 };
 
 const DEFAULT_FLOOR_SCALE_M=100;
@@ -56,6 +59,9 @@ const DEFAULT_FLOOR_SCALE_M=100;
 //            surveySamples[]; project-level revisions[]; settings gain
 //            propagation model / regulatory region / noise floor / slab loss
 //            / heatmap mode + band / branding logo + footer.
+//   v8 → v9: APs/cameras/switches gain install status + inventory fields
+//            (serial/assetTag/firmware, mac everywhere); revisions gain a
+//            baseline flag; settings gain siteCode + namePattern.
 export function migrateProject(data){
   const warnings=[];
   if(!data||typeof data!=='object'){throw new Error('Not a Plexus project file');}
@@ -86,6 +92,15 @@ export function migrateProject(data){
   // Clone the VLAN registry so it never aliases the shared DEFAULT_SETTINGS array.
   data.settings.vlans=Array.isArray(data.settings.vlans)?data.settings.vlans.map(v=>({...v})):[];
   if(!Array.isArray(data.revisions))data.revisions=[];
+  data.revisions.forEach(r=>{if(typeof r.baseline!=='boolean')r.baseline=false;});
+  // v8→v9: install status + inventory fields on every networked device.
+  const inv=(d)=>{
+    if(!DEVICE_STATUSES.includes(d.status))d.status='planned';
+    if(typeof d.serial!=='string')d.serial='';
+    if(typeof d.assetTag!=='string')d.assetTag='';
+    if(typeof d.firmware!=='string')d.firmware='';
+    if(typeof d.mac!=='string')d.mac='';
+  };
   // Project-level scaleM is the legacy default (pre-v6). New projects use
   // per-floor scaleM; old projects propagate the project-level value down.
   const projectScaleM=typeof data.scaleM==='number'&&data.scaleM>0?data.scaleM:DEFAULT_FLOOR_SCALE_M;
@@ -113,6 +128,7 @@ export function migrateProject(data){
       if(typeof ap.downtiltDeg!=='number')ap.downtiltDeg=0;
       if(typeof ap.capacityClients!=='number')ap.capacityClients=25;
       if(typeof ap.comment!=='string')ap.comment='';
+      inv(ap);
     });
     (f.DZS||[]).forEach(dz=>{
       if(typeof dz.locked!=='boolean')dz.locked=false;
@@ -126,6 +142,7 @@ export function migrateProject(data){
       if(typeof sw.comment!=='string')sw.comment='';
       if(typeof sw.ports!=='number')sw.ports=0;        // 0 = derive from model
       if(typeof sw.uplinkId!=='string')sw.uplinkId='';
+      inv(sw);
     });
     if(!Array.isArray(f.CAMS))f.CAMS=[];
     f.CAMS.forEach(cam=>{
@@ -138,6 +155,7 @@ export function migrateProject(data){
       if(typeof cam.swId!=='string')cam.swId='';
       if(!cam.resolution)cam.resolution='4K';
       if(typeof cam.comment!=='string')cam.comment='';
+      inv(cam);
     });
     if(!Array.isArray(f.WALLS))f.WALLS=[];
     f.WALLS.forEach(w=>{

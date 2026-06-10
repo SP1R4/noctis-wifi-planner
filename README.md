@@ -91,11 +91,29 @@ save to a JSON file you can email.
 - **AP-on-stick mode** — drag a candidate AP and read live coverage /
   overlap feedback before committing the placement.
 
+### Organization & rollout
+- **Inventory & rollout view** — a flat, searchable as-built table of
+  every device (serial, asset tag, firmware, IP) with per-device install
+  status — planned → ordered → installed → tested → live — editable
+  inline; a sidebar filter dims everything else on the map.
+- **IPAM** — subnet-backed VLAN registry feeds per-device IP suggestion
+  and bulk **IP+ all**; Validate flags off-subnet IPs and nearly-full
+  pools; IP plan CSV for the network doc.
+- **Port maps** — per-switch port grid in the panel and report, plus a
+  port-map CSV with free ports listed.
+- **Naming convention** — a `{site}-F{floor}-{type}{nn}` pattern that
+  Validate enforces and one click applies building-wide.
+- **As-designed vs as-built** — mark a revision as the ★ design baseline
+  and diff it against the current state, down to field changes
+  (status, IP, port, serial, channel…).
+- **Handover pack** — one zip with an HTML summary plus inventory,
+  IP plan, port map, BoM and cable-schedule CSVs.
+
 ### Deliverables
 - **BoM + cable-schedule CSV** — one-click bill of materials and cable
   schedule for procurement and installers.
 - **Per-AP install sheets** — a printable sheet per AP (location, radio
-  config, switch port, comment) for the field team.
+  config, switch port, serial, status) for the field team.
 - **Customer branding** — project logo, company / tagline / footer line,
   and architect's-scale presets carried into HTML and PDF exports.
 - **Design review** — snapshot revisions and diff any two; per-device

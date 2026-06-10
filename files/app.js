@@ -41,8 +41,11 @@ import {
   ROAMING_OVERLAP_DBM, DEFAULT_FLOOR_SLAB_DB,
   ARCH_SCALE_PRESETS,
   MODEL_IMAGE_PLACEHOLDERS, modelImageUrl, MODEL_IMAGES,
+  DEVICE_STATUSES, DEVICE_STATUS_META,
 } from './src/constants.js';
-import {runLengthM,analyzeLoad,nextFreeIp as netNextFreeIp} from './src/network.js';
+import {runLengthM,analyzeLoad,nextFreeIp as netNextFreeIp,ipInCidr,subnetUsage} from './src/network.js';
+import {formatName,nameMatches,patternHasNumber} from './src/naming.js';
+import {zipStore} from './src/zip.js';
 import {encryptObject,decryptObject} from './src/crypto.js';
 // PDF floor-plan import. The worker is bundled inline (?worker&inline) so the
 // portable single-file build still works from file:// with no external fetch.
@@ -225,6 +228,7 @@ const GRID_SZ=50; // px in image space
 // Search filter for left sidebar list. Empty string = show all.
 let searchQuery='';
 let _searchT=null;
+let statusFilter='';   // '' = all; otherwise dim devices whose status differs
 
 // Shortcuts
 const F=()=>FLOORS[curFloor];
@@ -721,6 +725,29 @@ function portControl(ports,cur,attrs){
     ? `<select class="ep-sel" ${attrs}>${portOptions(ports,cur)}</select>`
     : `<input class="ep-in" type="number" min="1" value="${esc(cur)}" placeholder="Port #" ${attrs}/>`;
 }
+// <option>s for the install-status picker.
+function statusOptions(cur){
+  cur=DEVICE_STATUSES.includes(cur)?cur:'planned';
+  return DEVICE_STATUSES.map(s=>`<option value="${s}"${s===cur?' selected':''}>${DEVICE_STATUS_META[s].label}</option>`).join('');
+}
+// Shared "Status & Inventory" panel section. `p` is the element-id prefix
+// (ep / cam / sw) and `act` the panel's data-input-action.
+function inventoryBlock(dev,p,act){
+  return `<div class="ep-section">Status &amp; Inventory</div>
+    <div class="ep-row"><label class="ep-lbl">Status</label><select class="ep-sel" id="${p}-status" data-input-action="${act}">${statusOptions(dev.status)}</select></div>
+    <div class="ep-row"><label class="ep-lbl">Serial #</label><input class="ep-in ep-mono" id="${p}-serial" value="${esc(dev.serial||'')}" data-input-action="${act}" placeholder="from the unit label"/></div>
+    <div class="ep-row"><label class="ep-lbl">Asset Tag</label><input class="ep-in ep-mono" id="${p}-asset" value="${esc(dev.assetTag||'')}" data-input-action="${act}" placeholder="ASSET-0001"/></div>
+    <div class="ep-row"><label class="ep-lbl">Firmware</label><input class="ep-in ep-mono" id="${p}-firmware" value="${esc(dev.firmware||'')}" data-input-action="${act}" placeholder="e.g. 6.5.28"/></div>`;
+}
+// Read the shared section back into the device. Safe when the section isn't
+// in the current panel (elements missing → no-op).
+function readInventoryBlock(dev,p){
+  const g=id=>document.getElementById(`${p}-${id}`);
+  const st=g('status');if(st)dev.status=st.value;
+  const se=g('serial');if(se)dev.serial=se.value;
+  const as=g('asset');if(as)dev.assetTag=as.value;
+  const fw=g('firmware');if(fw)dev.firmware=fw.value;
+}
 // Resolved port count for the switch a device is attached to (null = no switch
 // or unknown count).
 function devSwitchPorts(dev){
@@ -745,6 +772,68 @@ function updSwPort(el){
   snapshotSoon();
   d.port=el.value;
   render();
+}
+
+// ── Organization helpers ──────────────────────────────────────────────────
+// Every networked device in the building, flattened with its floor context.
+// Type tags match the naming convention's {type} token.
+function allDevices(){
+  const out=[];
+  FLOORS.forEach((f,floorIdx)=>{
+    (f.APS||[]).forEach(dev=>out.push({dev,type:'AP',floor:f,floorIdx}));
+    (f.CAMS||[]).forEach(dev=>out.push({dev,type:'CAM',floor:f,floorIdx}));
+    (f.SWS||[]).forEach(dev=>out.push({dev,type:'SW',floor:f,floorIdx}));
+  });
+  return out;
+}
+function statusMeta(dev){return DEVICE_STATUS_META[dev.status]||DEVICE_STATUS_META.planned;}
+function statusDimmed(dev){return !!statusFilter&&(dev.status||'planned')!==statusFilter;}
+function deviceStatusCounts(){
+  const counts=Object.fromEntries(DEVICE_STATUSES.map(s=>[s,0]));
+  for(const {dev} of allDevices())counts[dev.status||'planned']++;
+  return counts;
+}
+function namingCtx(type,floorIdx){
+  return {site:(SETTINGS.siteCode||'').trim(),floor:floorIdx+1,type};
+}
+// Fill every empty IP across the building from each device's VLAN subnet.
+function autoAssignIps(){
+  const used=new Set();
+  for(const {dev} of allDevices())if(dev.ip)used.add(String(dev.ip).trim());
+  const todo=allDevices().filter(({dev})=>{
+    if((dev.ip||'').trim())return false;
+    const v=vlanById(dev.vlan);
+    return !!(v&&v.subnet);
+  });
+  if(!todo.length){toast('No devices with a subnet-backed VLAN are missing an IP');return;}
+  snapshot();
+  let n=0;
+  for(const {dev} of todo){
+    const v=vlanById(dev.vlan);
+    const ip=netNextFreeIp(v.subnet,used);
+    if(!ip)continue;
+    dev.ip=ip;used.add(ip);n++;
+  }
+  render();renderList();renderRP();
+  toast(n?`Assigned ${n} IP address${n===1?'':'es'}`:'No free addresses left in the VLAN subnets');
+}
+// Rename every AP/camera/switch to the convention in SETTINGS.namePattern,
+// numbering devices per floor and type in list order.
+function autoRenameDevices(){
+  const pattern=(SETTINGS.namePattern||'').trim();
+  if(!patternHasNumber(pattern)){toast('Set a name pattern with a number token first (Settings → Organization)');return;}
+  snapshot();
+  let n=0;
+  FLOORS.forEach((f,floorIdx)=>{
+    for(const [list,type] of [[f.APS,'AP'],[f.CAMS,'CAM'],[f.SWS,'SW']]){
+      (list||[]).forEach((dev,i)=>{
+        const name=formatName(pattern,{...namingCtx(type,floorIdx),n:i+1});
+        if(dev.name!==name){dev.name=name;n++;}
+      });
+    }
+  });
+  render();renderList();renderRP();
+  toast(n?`Renamed ${n} device${n===1?'':'s'}`:'All names already follow the pattern');
 }
 
 // Walk every switch on the current floor, summarise PoE draw vs budget, port
@@ -892,6 +981,39 @@ function showValidation(){
     const checkVlan=(dev,label)=>{const v=(dev.vlan||'').trim();if(v&&!vlanById(v))warns.push(`${label}: VLAN "${v}" is not in the VLAN registry.`);};
     APS().forEach(ap=>checkVlan(ap,ap.name));
     CAMS().forEach(c=>checkVlan(c,c.name));
+  }
+  // IPs that sit outside their VLAN's declared subnet (floor devices).
+  const checkIpSubnet=(dev,label)=>{
+    const v=vlanById(dev.vlan);
+    const ip=(dev.ip||'').trim();
+    if(!ip||!v||!v.subnet)return;
+    if(!ipInCidr(ip,v.subnet))warns.push(`${label}: IP ${ip} is outside VLAN ${v.id} subnet ${v.subnet}.`);
+  };
+  APS().forEach(ap=>checkIpSubnet(ap,ap.name));
+  CAMS().forEach(c=>checkIpSubnet(c,c.name));
+  // Subnet pool exhaustion (building-wide — IPs are global).
+  if(vlanList().length){
+    const allIps=[];
+    for(const fl of FLOORS)for(const list of [fl.APS,fl.CAMS,fl.SWS])for(const d of (list||[]))if(d.ip)allIps.push(d.ip);
+    for(const v of vlanList()){
+      if(!v.subnet)continue;
+      const u=subnetUsage(v.subnet,allIps);
+      if(!u)continue;
+      if(u.pct>=100)errors.push(`VLAN ${v.id} subnet ${v.subnet} is full (${u.used}/${u.capacity} hosts).`);
+      else if(u.pct>=90)warns.push(`VLAN ${v.id} subnet ${v.subnet} is ${u.pct}% full (${u.used}/${u.capacity} hosts).`);
+    }
+  }
+  // Naming convention (when one is configured in Settings → Organization).
+  if(patternHasNumber(SETTINGS.namePattern)){
+    const offenders=[];
+    for(const [list,type] of [[APS(),'AP'],[CAMS(),'CAM'],[SWS(),'SW']]){
+      for(const dev of list)
+        if(!nameMatches(dev.name,SETTINGS.namePattern,namingCtx(type,curFloor)))offenders.push(dev.name||dev.id);
+    }
+    if(offenders.length){
+      const shown=offenders.slice(0,3).join(', ');
+      warns.push(`${offenders.length} device name${offenders.length===1?'':'s'} break the "${SETTINGS.namePattern}" convention (${shown}${offenders.length>3?', …':''}) — Inventory → Auto-rename fixes them.`);
+    }
   }
   // Client-capacity rollup (building-wide; only when an expectation is set).
   const expected=parseInt(SETTINGS.expectedClients,10)||0;
@@ -2111,6 +2233,7 @@ function renderAPs(){
     const ls=Math.max(8,Math.min(14,r*.17));
     const g=mk('g');g.setAttribute('class','ap-grp');g.dataset.id=ap.id;g.style.pointerEvents='all';
     if(ap.locked)g.style.opacity='.7';
+    if(statusDimmed(ap))g.style.opacity='.15';
 
     const hasWalls=WALLS().length>0;
     // Per-AP color (empty string = use default ink — no override). When "colour
@@ -2304,6 +2427,7 @@ function renderCAMs(){
     const fillRgba=c.color?hexToRgba(c.color,.12):tInk(.08);
     const g=mk('g');g.setAttribute('class','cam-grp');g.dataset.id=c.id;g.style.pointerEvents='all';
     if(c.locked)g.style.opacity='.7';
+    if(statusDimmed(c))g.style.opacity='.15';
 
     // Cone path (or full circle for fisheye / 360°).
     let cone;
@@ -2323,6 +2447,7 @@ function renderCAMs(){
     cone.setAttribute('class','cam-cone'+(isSel?' cam-cone-sel':''));
     cone.style.fill=fillRgba;
     cone.style.stroke=color;
+    if(statusDimmed(c))cone.setAttribute('opacity','.15');
     camLayer.appendChild(cone);
 
     // Lens marker at position.
@@ -2387,6 +2512,7 @@ function renderSWs(){
     if(!Number.isFinite(sw.fx)||!Number.isFinite(sw.fy))return;
     const cx=sw.fx*w,cy=sw.fy*h,isSel=isSelected(sw.id,'sw');
     const g=mk('g');g.setAttribute('class','sw-grp');g.dataset.id=sw.id;g.style.pointerEvents='all';
+    if(statusDimmed(sw))g.style.opacity='.15';
     const sz=sw.size||22;
     // Box and icon sizes scale with sz so a bigger switch reads as a bigger icon, not just a bigger empty box.
     const iconFs=Math.max(8,sz*.65);
@@ -2980,7 +3106,9 @@ function _downloadFile(filename,content,mime){
   a.click();
   setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},0);
 }
-function doBomCsv(){
+// Each _*CsvString builder returns the CSV text ('' when there is nothing to
+// export) so the single-file downloads and the handover pack share one source.
+function _bomCsvString(){
   const tally=new Map(); // model → {kind, model, qty, poeWatts}
   for(const f of FLOORS){
     for(const ap of (f.APS||[])){
@@ -3014,11 +3142,13 @@ function doBomCsv(){
     const boxM=parseFloat(SETTINGS.cableBoxM)||305;
     rows.push(['Cabling',`Cable boxes (${boxM} m)`,Math.ceil(cable.totalM/boxM),'']);
   }
-  const csv=rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
-  _downloadFile('bom.csv',csv,'text/csv');
+  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
+}
+function doBomCsv(){
+  _downloadFile('bom.csv',_bomCsvString(),'text/csv');
   toast(t('toast.bom_exported'));
 }
-function doCableCsv(){
+function _cableCsvString(){
   const rows=[['Floor','Device','Type','Switch','Port','Length (m)','Slack (m)','Status']];
   for(const f of FLOORS){
     const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
@@ -3044,10 +3174,152 @@ function doCableCsv(){
       rows.push([f.name||'',cam.name||cam.id,'Camera',c.swName,cam.port||'',c.m,c.slack,c.status]);
     }
   }
-  if(rows.length<=1){toast('No linked devices to export');return;}
-  const csv=rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
+  if(rows.length<=1)return '';
+  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
+}
+function doCableCsv(){
+  const csv=_cableCsvString();
+  if(!csv){toast('No linked devices to export');return;}
   _downloadFile('cable-schedule.csv',csv,'text/csv');
   toast(t('toast.cable_exported'));
+}
+
+// IP plan: one row per device with any network identity, across all floors.
+function _ipPlanCsvString(){
+  const rows=[['Floor','Device','Type','Model','IP','VLAN','VLAN name','Subnet','In subnet','Switch','Port','MAC']];
+  for(const {dev,type,floor} of allDevices()){
+    if(!(dev.ip||dev.vlan||dev.mac))continue;
+    const v=vlanById(dev.vlan);
+    const sw=(floor.SWS||[]).find(s=>s.id===dev.swId);
+    const inSubnet=dev.ip&&v&&v.subnet?(ipInCidr(dev.ip,v.subnet)?'yes':'NO'):'';
+    rows.push([floor.name||'',dev.name||dev.id,type,dev.model||'',dev.ip||'',dev.vlan||'',
+      v?(v.name||''):'',v?(v.subnet||''):'',inSubnet,sw?(sw.name||sw.id):'',dev.port||'',dev.mac||'']);
+  }
+  if(rows.length<=1)return '';
+  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
+}
+function doIpPlanCsv(){
+  const csv=_ipPlanCsvString();
+  if(!csv){toast('No device has an IP, VLAN or MAC yet');return;}
+  _downloadFile('ip-plan.csv',csv,'text/csv');
+  toast('IP plan exported');
+}
+
+// Port map: one row per switch port (free ports included), plus clients
+// without a parseable port number.
+function _portMapCsvString(){
+  const rows=[['Switch','Floor','Switch model','Port','Device','Type','Device model','IP','VLAN','PoE (W)']];
+  const {all}=topologyModel();
+  for(const e of all){
+    const a=analyzeSwitch(e.sw,e.floor);
+    const swName=e.sw.name||e.sw.id, swFloor=e.floor.name||'', swModel=e.sw.model||'';
+    const byPort=new Map();
+    const noPort=[];
+    for(const c of a.clients){
+      const p=parseInt(c.port,10);
+      if(p>=1&&(a.ports==null||p<=a.ports))byPort.set(p,c);
+      else noPort.push(c);
+    }
+    const maxPort=a.ports!=null?a.ports:Math.max(0,...byPort.keys());
+    for(let p=1;p<=maxPort;p++){
+      const c=byPort.get(p);
+      rows.push(c
+        ?[swName,swFloor,swModel,p,c.name,c.type==='AP'?'AP':'Camera',c.model||'',c.ip||'',c.dev.vlan||'',c.w||'']
+        :[swName,swFloor,swModel,p,'— free —','','','','','']);
+    }
+    for(const c of noPort)
+      rows.push([swName,swFloor,swModel,c.port||'?',c.name,c.type==='AP'?'AP':'Camera',c.model||'',c.ip||'',c.dev.vlan||'',c.w||'']);
+  }
+  if(rows.length<=1)return '';
+  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
+}
+function doPortMapCsv(){
+  const csv=_portMapCsvString();
+  if(!csv){toast('No switches placed yet');return;}
+  _downloadFile('port-map.csv',csv,'text/csv');
+  toast('Port map exported');
+}
+
+// Inventory: the as-built record — identity, status and install fields for
+// every device in the building.
+function _inventoryCsvString(){
+  const rows=[['Floor','Type','Name','Model','Status','Serial','Asset tag','Firmware','MAC','IP','VLAN','Switch','Port','Notes']];
+  for(const {dev,type,floor} of allDevices()){
+    const sw=(floor.SWS||[]).find(s=>s.id===dev.swId);
+    rows.push([floor.name||'',type,dev.name||dev.id,dev.model||'',statusMeta(dev).label,
+      dev.serial||'',dev.assetTag||'',dev.firmware||'',dev.mac||'',dev.ip||'',dev.vlan||'',
+      sw?(sw.name||sw.id):'',dev.port||'',dev.comment||dev.notes||'']);
+  }
+  if(rows.length<=1)return '';
+  return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
+}
+function doInventoryCsv(){
+  const csv=_inventoryCsvString();
+  if(!csv){toast('Nothing placed yet');return;}
+  _downloadFile('inventory.csv',csv,'text/csv');
+  toast('Inventory exported');
+}
+
+// ═══ HANDOVER PACK ════════════════════════════════
+// One zip with everything the customer/installer is handed at the end of a
+// job: an HTML summary plus every CSV deliverable. Images are deliberately
+// excluded — the HTML/PDF report exports cover the visual side.
+function _handoverSummaryHtml(){
+  const counts=deviceStatusCounts();
+  const total=allDevices().length;
+  const statusRow=DEVICE_STATUSES
+    .map(s=>`<span style="display:inline-block;margin-right:14px"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${DEVICE_STATUS_META[s].color};margin-right:4px"></span>${DEVICE_STATUS_META[s].label}: <strong>${counts[s]}</strong></span>`)
+    .join('');
+  const floorSections=FLOORS.map(f=>{
+    const devs=allDevices().filter(d=>d.floor===f);
+    if(!devs.length)return '';
+    const rows=devs.map(({dev,type,floor})=>{
+      const sw=(floor.SWS||[]).find(s=>s.id===dev.swId);
+      return `<tr><td>${esc(type)}</td><td><strong>${esc(dev.name||dev.id)}</strong></td><td>${esc(dev.model||'')}</td>
+        <td><span style="color:${statusMeta(dev).color};font-weight:700">${esc(statusMeta(dev).label)}</span></td>
+        <td class="mono">${esc(dev.serial||'—')}</td><td class="mono">${esc(dev.assetTag||'—')}</td>
+        <td class="mono">${esc(dev.ip||'—')}</td><td>${esc(dev.vlan||'—')}</td>
+        <td>${esc(sw?(sw.name||sw.id):'—')}${dev.port?` · ${esc(String(dev.port))}`:''}</td></tr>`;
+    }).join('');
+    return `<section class="floor-sec"><h2>${esc(f.name||'Floor')}</h2>
+      <table><thead><tr><th>Type</th><th>Name</th><th>Model</th><th>Status</th><th>Serial</th><th>Asset</th><th>IP</th><th>VLAN</th><th>Switch · Port</th></tr></thead>
+      <tbody>${rows}</tbody></table></section>`;
+  }).join('');
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><title>${esc(SETTINGS.company||'Plexus')} — Handover</title><style>
+body{font-family:Verdana,Geneva,sans-serif;color:#000;background:#fff;max-width:980px;margin:0 auto;padding:36px 28px}
+h1{font-size:26px;margin-bottom:2px}
+h2{font-size:17px;margin:26px 0 8px;border-bottom:1px solid #000;padding-bottom:4px}
+h3{font-size:13px;margin:16px 0 6px}
+.sub{font-size:11px;color:#555;margin-bottom:18px}
+table{width:100%;border-collapse:collapse;margin-bottom:12px}
+th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:6px 8px;border-bottom:1px solid #000}
+td{font-size:12px;padding:5px 8px;border-bottom:1px solid rgba(0,0,0,.1)}
+.mono{font-family:monospace;font-size:11px}
+.note{font-size:10px;color:#777;margin-top:24px}
+</style></head><body>
+<h1>${esc(SETTINGS.reportTitle||'Network Handover')}</h1>
+<div class="sub">${esc(SETTINGS.company||'Plexus')}${SETTINGS.tagline?' · '+esc(SETTINGS.tagline):''} · ${new Date().toLocaleDateString(SETTINGS.locale||'en-GB')} · ${total} devices · ${FLOORS.length} floor${FLOORS.length===1?'':'s'}</div>
+<div>${statusRow}</div>
+${floorSections}
+${reportNetworkHtml()}
+<div class="note">Generated by Plexus — Network Site Planner. The CSVs in this pack (inventory, IP plan, port map, BoM, cable schedule) carry the same data in machine-readable form.${SETTINGS.footerLine?' · '+esc(SETTINGS.footerLine):''}</div>
+</body></html>`;
+}
+function doHandoverPack(){
+  if(!allDevices().length){toast('Nothing placed yet');return;}
+  const files=[{name:'summary.html',data:_handoverSummaryHtml()}];
+  for(const [name,csv] of [
+    ['inventory.csv',_inventoryCsvString()],
+    ['ip-plan.csv',_ipPlanCsvString()],
+    ['port-map.csv',_portMapCsvString()],
+    ['bom.csv',_bomCsvString()],
+    ['cable-schedule.csv',_cableCsvString()],
+  ])if(csv)files.push({name,data:csv});
+  const zip=zipStore(files);
+  const date=new Date().toISOString().slice(0,10);
+  const site=(SETTINGS.siteCode||SETTINGS.company||'plexus').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'plexus';
+  _downloadFile(`${site}-handover-${date}.zip`,zip,'application/zip');
+  toast(`Handover pack: ${files.length} files zipped`);
 }
 
 // ═══ PER-AP INSTALL SHEETS ════════════════════════
@@ -3090,7 +3362,10 @@ async function doInstallSheets(){
             <th>Switch</th><td>${esc(swName)}${ap.swId&&ap.port?` · Port ${esc(ap.port)}`:''}</td></tr>
         <tr><th>IP</th><td>${esc(ap.ip||'')}</td>
             <th>MAC</th><td>${esc(ap.mac||'')}</td></tr>
-        <tr><th>VLAN</th><td colspan="3">${esc(ap.vlan||'')}</td></tr>
+        <tr><th>Serial</th><td>${esc(ap.serial||'')}</td>
+            <th>Asset tag</th><td>${esc(ap.assetTag||'')}</td></tr>
+        <tr><th>VLAN</th><td>${esc(ap.vlan||'')}</td>
+            <th>Status</th><td>${esc(statusMeta(ap).label)}</td></tr>
         <tr><th>Notes</th><td colspan="3">${esc(ap.comment||ap.notes||'')}</td></tr>
       </table>
       <div class="photo-placeholder">📷 INSTALL PHOTO</div>
@@ -3171,6 +3446,14 @@ function _diffRevisions(a,b){
             ? (ia.fx1!==ib.fx1||ia.fy1!==ib.fy1||ia.fx2!==ib.fx2||ia.fy2!==ib.fy2)
             : (ia.fx!==ib.fx||ia.fy!==ib.fy);
           if(moved)out.push(`~ [${fa.name||i}] ${kind.slice(0,-1)} ${ia.name||id} ${kind==='WALLS'?'reshaped':'moved'}`);
+          // Field-level changes — the as-designed vs as-built story: identity,
+          // wiring and rollout fields, not geometry.
+          if(kind!=='WALLS'&&kind!=='DZS'){
+            for(const fld of ['name','model','ip','vlan','port','swId','status','serial','channel','txPower']){
+              const va=ia[fld]??'',vb=ib[fld]??'';
+              if(String(va)!==String(vb))out.push(`~ [${fa.name||i}] ${kind.slice(0,-1)} ${ia.name||id}: ${fld} ${va===''?'(empty)':va} → ${vb===''?'(empty)':vb}`);
+            }
+          }
         }
       }
     }
@@ -3185,10 +3468,33 @@ function showRevisions(){
     wrap.appendChild(e);
   } else {
     const list=document.createElement('div');list.className='rev-list';
+    const showDiff=(lines,label)=>{
+      const old=wrap.querySelector('.rev-diff');if(old)old.remove();
+      const out=document.createElement('pre');out.className='rev-diff';
+      out.textContent=(label?label+'\n\n':'')+(lines.length?lines.join('\n'):'(no differences detected)');
+      wrap.appendChild(out);
+    };
     for(const rev of PROJECT_REVISIONS){
       const row=document.createElement('div');row.className='rev-row';
-      const name=document.createElement('div');name.className='rev-name';name.textContent=rev.name;
+      const name=document.createElement('div');name.className='rev-name';
+      name.textContent=(rev.baseline?'★ ':'')+rev.name;
+      if(rev.baseline)name.title='Design baseline';
       const when=document.createElement('div');when.className='rev-when';when.textContent=new Date(rev.createdAt).toLocaleString(SETTINGS.locale||'en-GB');
+      // Mark as the design baseline (one at a time) — the "as-designed" state
+      // that later as-built diffs are read against.
+      const b=document.createElement('button');b.className='btn';b.textContent=rev.baseline?'★':'☆';
+      b.title=rev.baseline?'Unmark design baseline':'Mark as design baseline';
+      b.addEventListener('click',()=>{
+        const on=!rev.baseline;
+        PROJECT_REVISIONS.forEach(r=>r.baseline=false);
+        rev.baseline=on;
+        autosave();closeModal();showRevisions();
+      });
+      const d=document.createElement('button');d.className='btn';d.textContent='Diff vs now';
+      d.title='What changed between this revision and the current state';
+      d.addEventListener('click',()=>{
+        showDiff(_diffRevisions(rev.snapshot,_snapshotForRevision()),`${rev.name} → current state`);
+      });
       const r=document.createElement('button');r.className='btn';r.textContent='Restore';
       r.addEventListener('click',()=>{closeModal();restoreRevision(rev.id);});
       const x=document.createElement('button');x.className='btn danger';x.textContent='×';x.title='Delete';
@@ -3196,7 +3502,7 @@ function showRevisions(){
         PROJECT_REVISIONS=PROJECT_REVISIONS.filter(r=>r.id!==rev.id);
         autosave();closeModal();showRevisions();
       });
-      row.appendChild(name);row.appendChild(when);row.appendChild(r);row.appendChild(x);
+      row.appendChild(name);row.appendChild(when);row.appendChild(b);row.appendChild(d);row.appendChild(r);row.appendChild(x);
       list.appendChild(row);
     }
     wrap.appendChild(list);
@@ -3219,6 +3525,129 @@ function showRevisions(){
   saveBtn.addEventListener('click',()=>{closeModal();newRevision();});
   wrap.appendChild(saveBtn);
   showModalNode('Revisions',wrap,null);
+}
+
+// ═══ INVENTORY ════════════════════════════════════
+// Flat, searchable as-built record of every device across all floors, with
+// rollout progress and inline status editing. The footer collects the
+// organization actions (bulk IPs, renaming, CSV/handover exports).
+function showInventory(){
+  const wrap=document.createElement('div');
+  wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
+  const devs=allDevices();
+  if(!devs.length){
+    wrap.textContent='Nothing placed yet. Add APs, cameras or switches first.';
+    showModalNode('Inventory',wrap,null);
+    return;
+  }
+  // Rollout progress pills.
+  const counts=deviceStatusCounts();
+  const prog=document.createElement('div');
+  prog.style.cssText='display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;font-size:11px';
+  for(const s of DEVICE_STATUSES){
+    const m=DEVICE_STATUS_META[s];
+    const pill=document.createElement('span');
+    pill.style.cssText='display:flex;align-items:center;gap:5px';
+    pill.innerHTML=`<span style="width:9px;height:9px;border-radius:50%;background:${m.color}"></span>${m.label} <strong>${counts[s]}</strong>`;
+    prog.appendChild(pill);
+  }
+  const done=counts.live+counts.tested;
+  const pct=Math.round((done/devs.length)*100);
+  const pctEl=document.createElement('span');
+  pctEl.style.cssText='margin-left:auto;font-family:"Share Tech Mono",monospace;font-size:11px;opacity:.7';
+  pctEl.textContent=`${pct}% tested/live`;
+  prog.appendChild(pctEl);
+  wrap.appendChild(prog);
+  // Search box.
+  const search=document.createElement('input');
+  search.className='ep-in';search.type='text';search.placeholder='Filter by name, model, serial, IP, status…';
+  search.style.cssText='width:100%;margin-bottom:8px';
+  wrap.appendChild(search);
+  // Table.
+  const scroller=document.createElement('div');
+  scroller.style.cssText='max-height:46vh;overflow:auto;border:1px solid var(--ink-04);border-radius:3px';
+  const tbl=document.createElement('table');
+  tbl.style.cssText='width:100%;border-collapse:collapse;font-size:12px';
+  tbl.innerHTML=`<thead><tr style="position:sticky;top:0;background:var(--bg,inherit)">${
+    ['Floor','Type','Name','Model','Status','Serial','Asset','IP','Switch·Port']
+      .map(h=>`<th style="text-align:left;font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--ink-04)">${h}</th>`).join('')
+  }</tr></thead>`;
+  const tbody=document.createElement('tbody');
+  tbl.appendChild(tbody);scroller.appendChild(tbl);wrap.appendChild(scroller);
+  const renderRows=()=>{
+    const q=(search.value||'').trim().toLowerCase();
+    tbody.innerHTML='';
+    let shown=0;
+    for(const entry of devs){
+      const {dev,type,floor,floorIdx}=entry;
+      const hay=[dev.name,dev.model,dev.serial,dev.assetTag,dev.firmware,dev.ip,dev.mac,dev.vlan,statusMeta(dev).label,floor.name].join(' ').toLowerCase();
+      if(q&&!hay.includes(q))continue;
+      shown++;
+      const sw=(floor.SWS||[]).find(s=>s.id===dev.swId);
+      const tr=document.createElement('tr');
+      tr.style.cssText='cursor:pointer';
+      const td=(html,mono)=>{const c=document.createElement('td');c.style.cssText=`padding:5px 8px;border-bottom:1px solid var(--ink-04)${mono?';font-family:\'Share Tech Mono\',monospace;font-size:10px':''}`;c.innerHTML=html;return c;};
+      tr.appendChild(td(esc(floor.name||`Floor ${floorIdx+1}`)));
+      tr.appendChild(td(type));
+      tr.appendChild(td(`<strong>${esc(dev.name||dev.id)}</strong>`));
+      tr.appendChild(td(esc(dev.model||'')));
+      // Inline status editor — the one field that changes during a rollout.
+      const stTd=td('');
+      const stSel=document.createElement('select');
+      stSel.className='ep-sel';stSel.style.cssText='font-size:11px;padding:2px 4px';
+      for(const s of DEVICE_STATUSES){
+        const o=document.createElement('option');o.value=s;o.textContent=DEVICE_STATUS_META[s].label;
+        if((dev.status||'planned')===s)o.selected=true;
+        stSel.appendChild(o);
+      }
+      stSel.style.color=statusMeta(dev).color;
+      stSel.addEventListener('click',e=>e.stopPropagation());
+      stSel.addEventListener('change',()=>{
+        snapshot();dev.status=stSel.value;stSel.style.color=statusMeta(dev).color;
+        render();renderList();autosave();
+      });
+      stTd.appendChild(stSel);tr.appendChild(stTd);
+      tr.appendChild(td(esc(dev.serial||'—'),true));
+      tr.appendChild(td(esc(dev.assetTag||'—'),true));
+      tr.appendChild(td(esc(dev.ip||'—'),true));
+      tr.appendChild(td(esc(sw?(sw.name||sw.id):'—')+(dev.port?` · ${esc(String(dev.port))}`:'')));
+      tr.addEventListener('click',()=>{
+        closeModal();
+        if(floorIdx!==curFloor)switchFloor(floorIdx);
+        setMode('sel');
+        const kind={AP:'ap',CAM:'cam',SW:'sw'}[type];
+        // The floor image loads async on a switch — give it a beat before zooming.
+        setTimeout(()=>sel(dev.id,kind,{zoom:true}),floorIdx!==curFloor?250:0);
+      });
+      tbody.appendChild(tr);
+    }
+    if(!shown){
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td colspan="9" style="padding:14px;text-align:center;opacity:.6">No matches.</td>`;
+      tbody.appendChild(tr);
+    }
+  };
+  renderRows();
+  search.addEventListener('input',renderRows);
+  // Footer: organization actions + exports.
+  const foot=document.createElement('div');
+  foot.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin-top:10px';
+  const mkBtn=(label,title,fn)=>{
+    const b=document.createElement('button');b.className='btn';b.textContent=label;b.title=title;
+    b.addEventListener('click',fn);foot.appendChild(b);
+  };
+  mkBtn('IP+ all','Fill every empty IP from its VLAN subnet',()=>{autoAssignIps();closeModal();showInventory();});
+  mkBtn('Auto-rename','Rename all devices to the convention in Settings → Organization',()=>{autoRenameDevices();closeModal();showInventory();});
+  mkBtn('⇣ Inventory CSV','Export this table as CSV',()=>doInventoryCsv());
+  mkBtn('⇣ IP plan CSV','One row per device with IP/VLAN/subnet',()=>doIpPlanCsv());
+  mkBtn('⇣ Port map CSV','One row per switch port',()=>doPortMapCsv());
+  const hb=document.createElement('button');hb.className='btn btn-primary';hb.textContent='⇩ Handover pack';
+  hb.title='Zip of the HTML summary + every CSV deliverable';
+  hb.addEventListener('click',()=>doHandoverPack());
+  foot.appendChild(hb);
+  wrap.appendChild(foot);
+  showModalNode('Inventory & rollout',wrap,null);
+  document.getElementById('mdl').classList.add('wide-modal');
 }
 
 // ═══ PLUGIN API (vendor catalog merging) ══════════
@@ -3807,6 +4236,7 @@ function renderCAMPanel(){
       ? portControl(devSwitchPorts(c),c.port,'id="cam-port" data-input-action="upd-cam"')
       : `<input class="ep-in" id="cam-port" value="${esc(c.port||'')}" data-input-action="upd-cam" placeholder="Assign a switch first" disabled/>`}</div>
     <div class="ep-row"><label class="ep-lbl">VLAN</label><input class="ep-in" id="cam-vlan" list="vlan-list" value="${esc(c.vlan||'')}" data-input-action="upd-cam" placeholder="20"/>${vlanDatalist()}</div>
+    ${inventoryBlock(c,'cam','upd-cam')}
     <div class="ep-section">Options</div>
     <label class="ep-check"><input type="checkbox" ${c.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
     ${credsBlock(c)}
@@ -3828,6 +4258,7 @@ function updCam(){
   c.swId=document.getElementById('cam-sw').value;
   const portEl=document.getElementById('cam-port');if(portEl)c.port=portEl.value;
   c.vlan=document.getElementById('cam-vlan').value;
+  readInventoryBlock(c,'cam');
   c.notes=document.getElementById('cam-notes').value;
   const swChanged=c.swId!==prevSwId;
   if(c.model!==prevModel && CAM_SPECS[c.model]){
@@ -3948,6 +4379,7 @@ function renderAPPanel(){
       ? portControl(devSwitchPorts(ap),ap.port,'id="ep-port" data-input-action="upd-ap"')
       : `<input class="ep-in" id="ep-port" value="${esc(ap.port||'')}" data-input-action="upd-ap" placeholder="Assign a switch first" disabled/>`}</div>
     <div class="ep-row"><label class="ep-lbl">VLAN</label><input class="ep-in" id="ep-vlan" list="vlan-list" value="${esc(ap.vlan||'')}" data-input-action="upd-ap" placeholder="10"/>${vlanDatalist()}</div>
+    ${inventoryBlock(ap,'ep','upd-ap')}
     <div class="ep-section">Options</div>
     <label class="ep-check"><input type="checkbox" ${ap.locked?'checked':''} data-change-action="toggle-lock"/><span>Lock position</span></label>
     <div class="ep-btn-row">
@@ -4006,6 +4438,7 @@ function renderSWPanel(){
       <input class="ep-in" id="sw-model-custom" value="${isCustom?esc(sw.model||''):''}" data-input-action="upd-sw" placeholder="Enter model name"/>
     </div>
     <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in ep-mono" id="sw-ip" value="${esc(sw.ip||'')}" data-input-action="upd-sw" placeholder="192.168.1.1"/></div>
+    <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="sw-mac" value="${esc(sw.mac||'')}" data-input-action="upd-sw" placeholder="aa:bb:cc:dd:ee:ff"/></div>
     <div class="ep-row"><label class="ep-lbl">PoE Budget (W)</label><input class="ep-in ep-mono" id="sw-poe" type="number" min="0" value="${sw.poeBudget||0}" data-input-action="upd-sw" placeholder="0 for non-PoE"/></div>
     <div class="ep-row"><label class="ep-lbl">Port Count</label><input class="ep-in ep-mono" id="sw-ports" type="number" min="0" value="${sw.ports||''}" data-input-action="upd-sw" placeholder="${derivedPorts!=null?derivedPorts:'auto'}"/></div>
     <div class="ep-row"><label class="ep-lbl">Uplink To</label>
@@ -4023,6 +4456,7 @@ function renderSWPanel(){
       <input class="ep-rng" id="sw-size" type="range" min="10" max="80" value="${sw.size||22}" data-input-action="upd-sw-size"/>
       <span class="ep-rng-val" id="sw-size-v">${sw.size||22}px</span>
     </div>
+    ${inventoryBlock(sw,'sw','upd-sw')}
     ${credsBlock(sw)}
     <div class="ep-section">Notes</div>
     <div class="ep-row"><textarea class="ep-txt" id="sw-notes" rows="3" data-input-action="upd-sw" placeholder="Location, uplink, config notes...">${sw.notes||''}</textarea></div>
@@ -4054,6 +4488,7 @@ function updAP(){
   const swEl=document.getElementById('ep-sw');if(swEl)ap.swId=swEl.value;
   const portEl=document.getElementById('ep-port');if(portEl)ap.port=portEl.value;
   ap.vlan=document.getElementById('ep-vlan').value;
+  readInventoryBlock(ap,'ep');
   const swChanged=ap.swId!==prevSwId;
   ap.notes=document.getElementById('ep-notes').value;
   // If the user just picked a different model, auto-adjust coverage radius
@@ -4101,6 +4536,8 @@ function updSW(){
     sw.model=dropdown;
   }
   sw.ip=document.getElementById('sw-ip').value;
+  const macEl=document.getElementById('sw-mac');if(macEl)sw.mac=macEl.value;
+  readInventoryBlock(sw,'sw');
   const poeEl=document.getElementById('sw-poe');
   if(poeEl)sw.poeBudget=parseInt(poeEl.value,10)||0;
   const portsEl=document.getElementById('sw-ports');
@@ -4151,9 +4588,10 @@ function renderList(){
     return fields.some(f=>String(f||'').toLowerCase().includes(q));
   };
 
-  const filteredAPs=APS().filter(ap=>matches(ap.name,ap.model,ap.freq,ap.ip,ap.mac,ap.notes));
-  const filteredSWs=SWS().filter(sw=>matches(sw.name,sw.model,sw.ip,sw.notes));
-  const filteredCAMs=CAMS().filter(c=>matches(c.name,c.model,c.ip,c.mac,c.notes));
+  const stOk=d=>!statusFilter||(d.status||'planned')===statusFilter;
+  const filteredAPs=APS().filter(ap=>stOk(ap)&&matches(ap.name,ap.model,ap.freq,ap.ip,ap.mac,ap.serial,ap.assetTag,ap.notes));
+  const filteredSWs=SWS().filter(sw=>stOk(sw)&&matches(sw.name,sw.model,sw.ip,sw.mac,sw.serial,sw.assetTag,sw.notes));
+  const filteredCAMs=CAMS().filter(c=>stOk(c)&&matches(c.name,c.model,c.ip,c.mac,c.serial,c.assetTag,c.notes));
   const filteredDZs=DZS().filter(dz=>matches(dz.label));
   const filteredWalls=WALLS().filter(w=>matches((WALL_MATERIALS[w.material]||{}).label));
   const matchTotal=filteredAPs.length+filteredSWs.length+filteredCAMs.length+filteredDZs.length+filteredWalls.length;
@@ -4171,7 +4609,7 @@ function renderList(){
       const sigDots={strong:'●●●',medium:'●●○',weak:'●○○'}[ap.sig||'strong'];
       const sigClass={strong:'sig-s',medium:'sig-m',weak:'sig-w'}[ap.sig||'strong'];
       const dotStyle=ap.color?` style="background:${esc(ap.color)}"`:'';
-      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(ap.name)}</div><div class="li-sub">${esc(ap.model||'U6 Pro')}</div></div><span class="li-sig ${sigClass}">${sigDots}</span>${ap.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${ap.id}" data-type="ap">✕</button>`;
+      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(ap.name)}<span class="li-status" style="background:${statusMeta(ap).color}" title="${esc(statusMeta(ap).label)}"></span></div><div class="li-sub">${esc(ap.model||'U6 Pro')}</div></div><span class="li-sig ${sigClass}">${sigDots}</span>${ap.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${ap.id}" data-type="ap">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(ap.id,'ap',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -4179,7 +4617,7 @@ function renderList(){
     const h=document.createElement('div');h.className='sec-lbl';h.textContent='Switches/Routers';leftList.appendChild(h);
     filteredSWs.forEach(sw=>{
       const d=document.createElement('div');d.className='list-item sw-item'+(sw.id===selId?' active':'');
-      d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}</div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${sw.id}" data-type="sw">✕</button>`;
+      d.innerHTML=`<span style="font-size:12px">⊞</span><div class="li-info"><div class="li-name">${esc(sw.name)}<span class="li-status" style="background:${statusMeta(sw).color}" title="${esc(statusMeta(sw).label)}"></span></div><div class="li-sub">${esc(sw.model||'')}</div></div><button class="li-del" data-action="quick-del" data-id="${sw.id}" data-type="sw">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(sw.id,'sw',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -4188,7 +4626,7 @@ function renderList(){
     filteredCAMs.forEach(c=>{
       const d=document.createElement('div');d.className='list-item cam-item'+(c.id===selId?' active':'')+(c.locked?' locked':'');
       const dotStyle=c.color?` style="background:${esc(c.color)}"`:'';
-      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(c.name)}</div><div class="li-sub">${esc(c.model||'')} · ${esc(c.resolution||'')}</div></div>${c.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${c.id}" data-type="cam">✕</button>`;
+      d.innerHTML=`<div class="li-dot"${dotStyle}></div><div class="li-info"><div class="li-name">${esc(c.name)}<span class="li-status" style="background:${statusMeta(c).color}" title="${esc(statusMeta(c).label)}"></span></div><div class="li-sub">${esc(c.model||'')} · ${esc(c.resolution||'')}</div></div>${c.locked?'<span class="li-lock">🔒</span>':''}<button class="li-del" data-action="quick-del" data-id="${c.id}" data-type="cam">✕</button>`;
       d.addEventListener('click',e=>{if(e.target.closest('.li-del'))return;sel(c.id,'cam',{zoom:true});setMode('sel');});leftList.appendChild(d);
     });
   }
@@ -4253,7 +4691,7 @@ function _showModalEl(title,bodyEl,okCB,cancelCB){
   const body=document.getElementById('mdl-body');
   body.replaceChildren(bodyEl);
   modalCB=okCB||null;modalCancelCB=cancelCB||null;
-  document.getElementById('mdl').classList.remove('help-modal');
+  document.getElementById('mdl').classList.remove('help-modal','wide-modal');
   const ok=document.getElementById('mdl-ok');
   if(ok){ok.style.display=okCB?'':'none';}
   const cancel=document.querySelector('#mdl .mdl-actions .btn:not(#mdl-ok)');
@@ -4832,6 +5270,14 @@ const CLICK_ACTIONS={
   'export-bom':   ()=>doBomCsv(),
   'export-cables':()=>doCableCsv(),
   'install-sheets':()=>doInstallSheets(),
+  // Organization features
+  'show-inventory':()=>showInventory(),
+  'handover-pack': ()=>doHandoverPack(),
+  'export-ip-plan':()=>doIpPlanCsv(),
+  'export-port-map':()=>doPortMapCsv(),
+  'export-inventory':()=>doInventoryCsv(),
+  'auto-assign-ips':()=>autoAssignIps(),
+  'auto-rename':   ()=>autoRenameDevices(),
   'open-survey':  ()=>document.getElementById('survey-up')?.click(),
   'show-plugins': ()=>showPluginCatalogDialog(),
   'show-revisions':()=>showRevisions(),
@@ -4940,6 +5386,10 @@ document.addEventListener('input',e=>{
   else if(a==='upd-cam-fov')updCamFov(t.value);
   else if(a==='upd-cam-range')updCamRange(t.value);
   else if(a==='upd-cam-heading')updCamHeading(t.value);
+  else if(a==='status-filter'){
+    statusFilter=t.value;
+    renderList();render();
+  }
   else if(a==='sb-search'){
     searchQuery=t.value;
     // Reflect "has-text" state on the row so the clear (×) button shows up
@@ -5122,6 +5572,14 @@ function showSettings(){
     ...ARCH_SCALE_PRESETS.map(p=>({value:p.label,label:`${p.label} (${p.m100px} m / 100 px)`})),
   ]);
 
+  // ── Organization ──
+  addHeading('Organization');
+  addText('siteCode','Site code','HQ — feeds {site} in the name pattern');
+  addText('namePattern','Device name pattern','{site}-F{floor}-{type}{nn}');
+  const nameHint=document.createElement('div');nameHint.className='ep-hint';
+  nameHint.textContent='Tokens: {site} {floor} {type} {n}/{nn}/{nnn}. Validate flags names that break the pattern; Inventory → Auto-rename applies it to every device.';
+  wrap.appendChild(nameHint);
+
   // ── Cabling & capacity ──
   addHeading('Cabling & capacity');
   addNumber('cableRoutingFactor','Cable routing factor',1,3,0.05);
@@ -5172,7 +5630,7 @@ function showSettings(){
   const apply=()=>{
     let changed=false;
     // Strings
-    for(const k of ['company','tagline','contact','metaLine','reportTitle','footerLine','logoDataUrl','locale','language','propagationModel','regulatoryRegion','heatmapMode','heatmapBand','archScale']){
+    for(const k of ['company','tagline','contact','metaLine','reportTitle','footerLine','logoDataUrl','locale','language','propagationModel','regulatoryRegion','heatmapMode','heatmapBand','archScale','siteCode','namePattern']){
       if(!inputs[k])continue;
       const val=(inputs[k].value||'').trim();
       if(String(SETTINGS[k]||'')!==val){SETTINGS[k]=val;changed=true;}
