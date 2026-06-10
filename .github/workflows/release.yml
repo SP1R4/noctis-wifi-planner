@@ -50,6 +50,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Font binaries are gitignored — fetch them so installers don't ship
+      # with system-font fallbacks.
+      - name: Bundle self-hosted fonts
+        run: npm run bundle:fonts
+
       - name: Build installers
         run: npm run app:build
         env:
