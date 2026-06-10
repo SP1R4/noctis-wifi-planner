@@ -9,7 +9,9 @@
 <img src="https://img.shields.io/badge/no%20framework-vanilla%20JS-f7df1e.svg" alt="Vanilla JS">
 </p>
 
-<p align="center"><img src="docs/screenshot.png" alt="Plexus — wall-aware WiFi coverage over a floor plan" width="860"></p>
+<p align="center"><strong><a href="https://sp1r4.github.io/plexus-network-planner/">▶ Try it in your browser</a></strong> — nothing to install; click <em>Load sample project</em>.</p>
+
+<p align="center"><img src="docs/media/demo.gif" alt="Dragging an AP — wall-aware coverage re-clips in real time" width="860"></p>
 
 Plexus is a **network site planner** that runs entirely in the browser or as a
 native desktop app. Drop a floor plan, place access points, IP cameras and
@@ -23,6 +25,8 @@ regions), multi-floor, band-aware (2.4 / 5 / 6 GHz), directional antennas, surve
 import for predicted-vs-measured validation. **No backend. No accounts.** Projects
 save to a JSON file you can email.
 
+> **[Live demo](https://sp1r4.github.io/plexus-network-planner/)** — runs in any
+> browser, deployed straight from `main`.
 > **Download — [latest release](https://github.com/SP1R4/plexus-network-planner/releases/latest):**
 > desktop installers for **macOS** (`.dmg`), **Windows** (`.exe`) and **Linux**
 > (`.AppImage` / `.deb`), or the **portable browser zip** (unzip and open
@@ -119,6 +123,26 @@ save to a JSON file you can email.
 - **Runs from `file://`** after `npm run build` — no server required for
   end users.
 
+## Gallery
+
+| | |
+|---|---|
+| ![Wall-clipped coverage polygons](docs/media/coverage.png) | ![RSSI heatmap](docs/media/heatmap-rssi.png) |
+| Wall-clipped coverage + camera FoV cones | RSSI heatmap (ITU-R P.1238 indoor model) |
+| ![Throughput heatmap](docs/media/heatmap-throughput.png) | ![Dark mode](docs/media/dark-heatmap.png) |
+| Estimated-throughput heatmap | Dark mode |
+
+<details>
+<summary>More: cable runs, classic hero shot</summary>
+
+![Cable runs to switches](docs/media/cables.png)
+![Plexus hero](docs/screenshot.png)
+
+</details>
+
+All shots come from the bundled sample project (`files/src/sampleProject.js`)
+and are regenerated with `node scripts/capture-media.mjs`.
+
 ## Quick start
 
 Requires Node 18+ (LTS recommended).
@@ -131,8 +155,10 @@ npm run dev          # http://localhost:5173
 ```
 
 Then in the app:
-1. Click **↑ Upload Map** and drop in a floor plan (PNG/JPG).
-2. Set **SCALE** in the toolbar — metres per 100 px of the image.
+1. Click **▶ Load sample project** to start from a populated office plan,
+   or **↑ Upload Map** to drop in your own floor plan (PNG/JPG/SVG/PDF).
+2. Set **SCALE** in the toolbar — metres per 100 px of the image (this
+   also switches the heatmap to physical FSPL-based path loss).
 3. Press <kbd>A</kbd> and click the map to place access points.
 4. Press <kbd>L</kbd> to draw walls (Shift snaps to 45°).
 5. Press <kbd>?</kbd> for the full keyboard cheatsheet.
@@ -197,11 +223,14 @@ npm run e2e:install  # one-time: fetch the Playwright browser
 npm run e2e          # Playwright end-to-end smoke suite
 ```
 
-93 unit tests across pure geometry and project-file migration, plus a
-Playwright E2E smoke suite that boots the app. The `files/src/` modules
-are type-checked with `tsc --checkJs` via JSDoc annotations — no `.ts`
-rename. Adding a feature that touches walls, coverage, or schema
-versions? Drop a test next to the existing ones in `tests/`.
+144 unit tests across pure geometry (including the physical FSPL model),
+project-file migration, network logic, crypto, and the bundled sample
+project — plus a Playwright E2E suite: a boot smoke test and a full
+scenario test (load sample → place AP → draw wall → coverage re-clips →
+export → re-import). The `files/src/` modules are type-checked with
+`tsc --checkJs` via JSDoc annotations — no `.ts` rename. Adding a
+feature that touches walls, coverage, or schema versions? Drop a test
+next to the existing ones in `tests/`.
 
 ## Project layout
 
@@ -218,12 +247,14 @@ files/
     constants.js     AP / camera / switch catalogs + antenna patterns
                      + PoE tables + heatmap modes + regulatory regions
     imageStore.js    IndexedDB image storage
+    sampleProject.js Bundled sample project (plan SVG + devices + walls)
     i18n.js          No-dependency t() translation helper
     i18n/en.js       English string bundle
 tests/
   geometry.test.js   Geometry + band-loss + directional + RF math tests
   migrate.test.js    Schema migration tests (every prior version)
   e2e/smoke.spec.js  Playwright end-to-end smoke suite
+  e2e/scenario.spec.js  Full editing-loop E2E (sample → edit → export → import)
 vite.config.js       Build config (relative paths for file:// portability)
 vitest.config.js     Unit-test config (points at ./tests/)
 playwright.config.js E2E-test config (tests/e2e/, auto-starts dev server)
@@ -233,20 +264,32 @@ scripts/             OS-specific one-line installers (macOS / Ubuntu / Windows)
 
 ## How the coverage math works
 
-For each access point we cast **72 rays** (one every 5°) outward. Each
-ray walks through every wall it intersects, sums the per-material dB
-loss multiplied by the AP's **band factor** (0.6 for 2.4 GHz, 1.0 for
-5 GHz, 1.3 for 6 GHz), and shrinks the ray's reach by `0.5^(loss/3)` —
-a rough approximation that each 3 dB of attenuation halves the usable
+**Coverage polygons** — for each access point we cast **72 rays** (one
+every 5°) outward. Each ray walks through every wall it intersects, sums
+the per-material dB loss multiplied by the AP's **band factor** (0.6 for
+2.4 GHz, 1.0 for 5 GHz, 1.3 for 6 GHz), and shrinks the ray's reach by
+`0.5^(loss/3)` — each 3 dB of attenuation roughly halves the usable
 range. The 72 endpoints form a polygon, cached on the AP, that's the
 visible coverage shape.
+
+**Heatmap dBm values** — when the floor has a real-world scale set (the
+SCALE field, metres per 100 px), signal strength is computed with
+physical path loss: `FSPL(1 m) = 20·log₁₀(f_MHz) − 27.55` at the band's
+carrier (2 437 / 5 500 / 6 525 MHz), plus `10·n·log₁₀(d)` with the
+propagation model's exponent (log-distance n = 2.2, ITU-R P.1238 office
+n = 3.0, COST-231 multi-wall n = 2.0 + explicit per-wall losses), minus
+per-wall material dB, starting from the AP's effective EIRP
+(Tx power + antenna gain − cable loss). Projects without a scale fall
+back to the older per-radius heuristic, so old project files render
+unchanged.
 
 The floor-coverage percentage is a coarse grid sampler that asks the
 same question — "can *any* AP reach this point through the walls?" —
 at ~60 points across the shorter axis of the image.
 
 See `files/src/geometry.js` for the actual implementation; it's pure,
-DOM-free, and unit-tested.
+DOM-free, and unit-tested. For how predictions compare against
+real-world measurements, see [docs/accuracy.md](docs/accuracy.md).
 
 ## Project file format
 

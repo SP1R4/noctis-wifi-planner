@@ -1135,6 +1135,9 @@ body.theme-dark #heat-canvas{mix-blend-mode:screen;opacity:.55}
   font-family:'Share Tech Mono',monospace;font-size:9px;
   background:var(--bg);
 }
+/* The container is pointer-events:none so map clicks pass through — the
+   sample button must opt back in to stay clickable. */
+.es-sample{pointer-events:auto;margin-top:8px}
 
 /* ── Help overlay (modal) ─────────────────────────────────────── */
 #mdl.help-modal{max-width:560px;width:92%}

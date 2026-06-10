@@ -49,6 +49,7 @@ import {encryptObject,decryptObject} from './src/crypto.js';
 import * as pdfjsLib from 'pdfjs-dist';
 import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline';
 import {t,setLang,getLang,availableLangs} from './src/i18n.js';
+import {buildSampleProject} from './src/sampleProject.js';
 import {
   idbPutImage, idbGetImage, idbDeleteImage,
   newImgId as _newImgId,
@@ -1327,6 +1328,25 @@ function loadProject(input){
   };
   reader.readAsText(file);input.value='';
 }
+// Load the bundled sample project (empty-state button). Same pipeline as
+// loadProject, minus the file read — the sample is generated in-memory.
+async function loadSampleProject(){
+  try{
+    const [data,warnings]=migrateProject(buildSampleProject());
+    FLOORS=data.floors;
+    SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
+    applyStoredCatalog();
+    PROJECT_REVISIONS=Array.isArray(data.revisions)?data.revisions:[];
+    if(SETTINGS.language)setLang(SETTINGS.language);
+    curFloor=0;selId=null;selType=null;
+    syncScaleFromFloor();
+    syncNidFromFloors();
+    await _rehydrateImages();
+    applySettingsToBrand();
+    loadFloorImage();renderFloorTabs();render();renderList();renderRP();calcCoverage();
+    if(warnings.length){toast(warnings[0]);}else{toast('Sample project loaded — drag things around');}
+  }catch(err){toast('Error loading sample: '+(err.message||'unknown'));}
+}
 // Update the top-bar brand label to whatever the current SETTINGS specify.
 // Called after settings change or a project load.
 function applySettingsToBrand(){
@@ -2509,6 +2529,7 @@ function _bestMetricAt(metric,x,y,aps,neighbour,walls,w,h,propModel,slab,noiseFl
       eirpDbm:effectiveEirp(ap),
       noiseFloorDbm:noiseFloor,
       model:propModel,
+      metersPerPx:(scaleM||100)/100,
     };
     let v=null;
     if(metric==='dbm') v=dbmAt(ap,x,y,w,h,walls,opts);
@@ -2521,7 +2542,7 @@ function _bestMetricAt(metric,x,y,aps,neighbour,walls,w,h,propModel,slab,noiseFl
   }
   for(const ap of neighbour){
     const bf=bandLossMultiplier(ap.freq);
-    const dbm=dbmAtThroughSlab(ap,x,y,w,h,slab,bf,propModel);
+    const dbm=dbmAtThroughSlab(ap,x,y,w,h,slab,bf,propModel,(scaleM||100)/100);
     if(dbm===null)continue;
     let v=null;
     if(metric==='dbm') v=dbm;
@@ -2599,6 +2620,7 @@ function renderRoaming(){
           arcDeg:pat.arc,headingDeg:ap.heading||0,
           eirpDbm:effectiveEirp(ap),
           model:propModel,
+          metersPerPx:(scaleM||100)/100,
         });
         if(dbm!==null && dbm>=ROAMING_OVERLAP_DBM){n++;if(n>=2)break;}
       }
@@ -2679,6 +2701,7 @@ function renderSamples(){
         arcDeg:pat.arc,headingDeg:ap.heading||0,
         eirpDbm:effectiveEirp(ap),
         model:propModel,
+        metersPerPx:(scaleM||100)/100,
       });
       if(d!==null&&d>predicted)predicted=d;
     }
@@ -4765,6 +4788,7 @@ const CLICK_ACTIONS={
   'open-upload':   ()=>document.getElementById('file-up').click(),
   'open-svg':      ()=>document.getElementById('svg-up').click(),
   'open-load':     ()=>document.getElementById('load-up').click(),
+  'load-sample':   ()=>loadSampleProject(),
   'save':          ()=>saveProject(),
   'share-link':    ()=>shareLink(),
   'new-project':   ()=>newProject(),

@@ -6,6 +6,39 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Live demo on GitHub Pages** — the production build now deploys to
+  <https://sp1r4.github.io/plexus-network-planner/> on every push to `main`
+  (`.github/workflows/pages.yml`).
+- **Load sample project** button on the empty state: a bundled 48×32 m office
+  (floor-plan SVG, walls, 3 APs, 2 cameras, PoE switch, dead zone) generated
+  from one data source in `files/src/sampleProject.js`, so the picture and the
+  RF model can't drift apart.
+- **Physical path-loss model.** When a floor has a real-world scale, heatmap /
+  SNR / throughput values use real FSPL at the band's carrier frequency plus a
+  per-model exponent (log-distance n=2.2, ITU-R P.1238 n=3.0, COST-231
+  multi-wall n=2.0) and explicit per-wall losses, seeded from the AP's EIRP.
+  Unscaled projects keep the previous per-radius heuristic, so old files
+  render unchanged.
+- **Scenario E2E test** covering the full editing loop: load sample → place
+  AP → draw wall → coverage re-clips → export → re-import.
+- **README media pipeline** — `scripts/capture-media.mjs` regenerates the
+  demo GIF and gallery screenshots from the sample project via Playwright.
+- **Accuracy methodology** (`docs/accuracy.md`): how to validate predictions
+  against a real survey with the built-in CSV import, plus the model's known
+  error sources.
+
+### Changed
+- PBKDF2 iterations for credential encryption raised 150k → 600k (OWASP
+  2023+ floor). Old blobs still decrypt — the iteration count is stored per
+  blob.
+- Electron 31 → 42 for current Chromium security patches.
+- Release and Pages builds now run `bundle:fonts` first, so shipped apps no
+  longer fall back to system fonts (font binaries are gitignored).
+- `pdfjs-dist` moved from devDependencies to dependencies (it ships in the
+  bundle), excluded from electron-builder's node_modules packaging since Vite
+  inlines it.
+
 ## [3.3.1] — 2026-06-05
 
 ### Fixed
