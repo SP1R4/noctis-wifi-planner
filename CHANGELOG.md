@@ -4,7 +4,9 @@ All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.4.0] — 2026-06-10
+
+Live demo, real physics, security hardening.
 
 ### Added
 - **Live demo on GitHub Pages** — the production build now deploys to
