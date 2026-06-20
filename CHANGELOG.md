@@ -6,6 +6,8 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.5.0] — 2026-06-20
+
 Organization tools — Plexus as the system of record for the install, not just
 the coverage picture.
 
@@ -37,6 +39,11 @@ the coverage picture.
 
 ### Changed
 - Demo GIF re-captured at 2× pixel density — sharper and 60 % smaller.
+
+### Fixed
+- Windows taskbar showed the generic Electron logo instead of the Plexus icon:
+  the app now sets its AppUserModelID (matching the installed shortcut) and an
+  explicit window icon, so Windows ties the running window to the shortcut.
 
 ## [3.4.0] — 2026-06-10
 
