@@ -39,9 +39,14 @@ function createWindow() {
     backgroundColor: '#0e0e0e',
     title: 'Plexus',
     show: false,
-    icon: process.platform === 'linux'
-      ? path.join(__dirname, 'resources', 'icon.png')
-      : undefined,
+    // Explicit window icon on every platform. On Windows the taskbar/title-bar
+    // icon comes from here (and from the AppUserModelID set below) — without it
+    // the running window falls back to the generic Electron logo even though
+    // the packaged .exe has the icon embedded.
+    icon: path.join(
+      __dirname, 'resources',
+      process.platform === 'win32' ? 'icon.ico' : 'icon.png',
+    ),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -89,6 +94,15 @@ function buildMenu() {
     { role: 'windowMenu' },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+// Windows groups taskbar buttons and resolves the running app's icon by its
+// AppUserModelID. It must match the appId electron-builder bakes into the
+// installed shortcut (com.plexus.networkplanner); otherwise Windows can't tie
+// the live window to the shortcut and shows the generic Electron icon instead
+// of (and breaks pinning for) the Plexus logo.
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.plexus.networkplanner');
 }
 
 app.whenReady().then(() => {
