@@ -47,8 +47,20 @@ save to a JSON file you can email.
 - **Directional antennas** — omni, ceiling-down, wall-mount, sector
   90 / 60 / 30°. Coverage polygon is masked by the pattern + heading.
 - **Real signal-strength heatmap** — canvas-based per-pixel rendering
-  with banded colours. Switch the heatmap between RSSI, SNR, MCS index,
-  and estimated throughput, and filter it by band (2.4 / 5 / 6 GHz).
+  with banded colours. Switch the heatmap between RSSI, SNR, **SINR**,
+  MCS index, and estimated throughput, and filter it by band
+  (2.4 / 5 / 6 GHz). Computed in a **Web Worker**, so dragging an AP
+  never janks the UI.
+- **Interference-aware SINR** — co-channel APs whose occupied spectrum
+  overlaps the serving AP count as interference, per pixel. Green
+  coverage with contested RF finally shows up on the map.
+- **Channel widths** — 20 / 40 / 80 / 160 / 320 MHz per AP. Width raises
+  the noise floor (+3 dB per doubling), scales throughput by real OFDMA
+  tone ratios, and makes channel-overlap warnings and the auto-channel
+  planner spectrum-true.
+- **Airtime / capacity planning** — expected clients × per-client Mbps
+  vs the cell's average deliverable throughput; the AP panel shows live
+  utilization and Validate flags saturated cells.
 - **Selectable propagation models** — log-distance, ITU-R P.1238 indoor,
   or COST-231 multi-wall, so the prediction matches the building.
 - **Antenna fidelity** — per-AP antenna gain, cable loss, mount height,
@@ -80,6 +92,18 @@ save to a JSON file you can email.
   multi-material, drag vertex handles to reshape after placement.
 - **SVG wall import** — drop an SVG floor plan and line / polyline /
   polygon / path elements become walls automatically.
+- **DXF wall import** — LINE / LWPOLYLINE / POLYLINE entities from CAD
+  handoffs become walls (with a generated blank canvas when there's no
+  plan image yet).
+- **Automatic wall detection** — classical CV (Otsu + Hough transform,
+  zero dependencies) extracts straight walls from the plan bitmap, with
+  a preview + accept/discard step.
+- **DORI zones** (IEC 62676-4) — camera cones show Identify / Recognize
+  / Observe / Detect pixel-density bands from resolution + FoV + floor
+  scale; per-tier distances in the camera panel.
+- **Storage calculator** — per-camera bitrate (auto from resolution ×
+  H.264/H.265, or override) × retention days → NVR sizing in the panel,
+  Validate and the BoM.
 
 ### Network planning
 - **PoE budget** — sum draw per switch from every AP / camera assigned
@@ -88,6 +112,16 @@ save to a JSON file you can email.
   devices to their switches with length labels (red when > 100 m).
 - **Survey import** — import measured RSSI samples from a CSV; dots are
   flagged where measured signal deviates materially from predicted.
+- **Live survey mode** (desktop app) — click where you're standing and
+  the app samples your machine's current WiFi RSSI into a survey point.
+  No CSV round-trip.
+- **UniFi controller sync** (desktop app) — pull the device list from a
+  UniFi OS console or legacy controller to fill in as-built IP /
+  firmware / serial and Live status; push the planned channel / width /
+  Tx-power back to matching APs.
+- **Ekahau interop** — import `.esx` projects (floors, plan images,
+  scale, material-mapped walls, AP positions/channels) and export a
+  best-effort `.esx`.
 - **AP-on-stick mode** — drag a candidate AP and read live coverage /
   overlap feedback before committing the placement.
 

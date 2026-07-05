@@ -84,6 +84,7 @@ const AP_BASE={
   freq:'2.4 / 5 GHz',channel:'auto',txPower:'auto',sig:'strong',color:'',
   mac:'',notes:'',comment:'',locked:false,pattern:'omni',heading:0,
   cableLossDb:0,txPowerDbm:20,mountHeightM:2.7,downtiltDeg:0,capacityClients:25,
+  chanWidth:80,   // modern 5 GHz default; also demos the width-aware planner
   status:'planned',serial:'',assetTag:'',firmware:'',
 };
 

@@ -19,7 +19,16 @@ import {
   mcsFromSnr,
   effectiveEirp,
   dbmAtThroughSlab,
+  bandKey,
+  CHANNEL_WIDTHS,
+  channelsOverlapMhz,
+  widthThroughputMult,
 } from './src/geometry.js';
+import {computeHeatGrid} from './src/heatmap.js';
+// Heatmap computation runs in a Web Worker (inline-bundled like the PDF
+// worker) so dragging an AP never janks the main thread. computeHeatGrid is
+// the synchronous fallback when workers are unavailable.
+import HeatWorker from './src/heatmapWorker.js?worker&inline';
 import {
   migrateProject,
   syncNidFromFloors as _syncNidFromFloors,
@@ -43,7 +52,7 @@ import {
   MODEL_IMAGE_PLACEHOLDERS, modelImageUrl, MODEL_IMAGES,
   DEVICE_STATUSES, DEVICE_STATUS_META,
 } from './src/constants.js';
-import {runLengthM,analyzeLoad,nextFreeIp as netNextFreeIp,ipInCidr,subnetUsage} from './src/network.js';
+import {runLengthM,analyzeLoad,nextFreeIp as netNextFreeIp,ipInCidr,subnetUsage,airtimeUtilization} from './src/network.js';
 import {formatName,nameMatches,patternHasNumber} from './src/naming.js';
 import {zipStore} from './src/zip.js';
 import {encryptObject,decryptObject} from './src/crypto.js';
@@ -52,6 +61,10 @@ import {encryptObject,decryptObject} from './src/crypto.js';
 import * as pdfjsLib from 'pdfjs-dist';
 import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline';
 import {t,setLang,getLang,availableLangs} from './src/i18n.js';
+import {detectWalls} from './src/walldetect.js';
+import {parseDxf} from './src/dxf.js';
+import {importEsx,buildEsxZip} from './src/esx.js';
+import {CAM_RES_HPX,DORI_LEVELS,doriDistancesM,cameraBitrateMbps,storageGb} from './src/cameras.js';
 import {buildSampleProject} from './src/sampleProject.js';
 import {
   idbPutImage, idbGetImage, idbDeleteImage,
@@ -175,7 +188,8 @@ const HINTS={
   sw:  'Click to place a switch or router',
   cam: 'Click to place a camera · rotate via heading slider in the panel',
   ruler:'Click two points to measure · Esc to clear',
-  wall:'Click two points to draw a wall · Shift for 45° · Esc to cancel'
+  wall:'Click two points to draw a wall · Shift for 45° · Esc to cancel',
+  survey:'Click where you are standing — the desktop app samples the live WiFi signal there'
 };
 
 // Image store (IndexedDB-backed) lives in ./src/imageStore.js. We import
@@ -649,6 +663,47 @@ function nextFreeIp(dev){
   return netNextFreeIp(cidr,used);
 }
 // Total estimated client capacity (sum of per-AP capacityClients) across floors.
+// ── Airtime estimates ─────────────────────────────────────────────────────
+// Average deliverable throughput across an AP's cell, sampled on 12 spokes ×
+// 3 radii. Cell-edge samples matter: airtime is shared, so one -80 dBm client
+// drags everyone down — a peak-rate figure would hide that.
+function apAvgCellMbps(ap,floor){
+  const f=floor||F();
+  const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+  const walls=f.WALLS||[];
+  const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
+  const opts={
+    bandFactor:bandLossMultiplier(ap.freq),
+    arcDeg:pat.arc,headingDeg:ap.heading||0,
+    eirpDbm:effectiveEirp(ap),
+    noiseFloorDbm:Number.isFinite(SETTINGS.noiseFloorDbm)?SETTINGS.noiseFloorDbm:-95,
+    chanWidthMhz:ap.chanWidth||20,
+    model:SETTINGS.propagationModel||'logd',
+    metersPerPx:((f.scaleM||100)/100),
+  };
+  let sum=0,n=0;
+  for(let i=0;i<12;i++){
+    const a=(i/12)*2*Math.PI;
+    for(const rr of [0.35,0.65,0.9]){
+      const x=ap.fx*w+Math.cos(a)*ap.r*rr, y=ap.fy*h+Math.sin(a)*ap.r*rr;
+      if(x<0||y<0||x>w||y>h)continue;
+      sum+=mbpsAt(ap,x,y,w,h,walls,opts);n++;
+    }
+  }
+  return n?sum/n:0;
+}
+// Airtime utilization % for an AP (Infinity when the cell delivers nothing).
+function apAirtimePct(ap,floor){
+  const u=airtimeUtilization(ap.capacityClients||0,parseFloat(SETTINGS.perClientMbps)||5,apAvgCellMbps(ap,floor));
+  return u===Infinity?Infinity:Math.round(u*100);
+}
+function _airtimeLabel(ap){
+  const pct=apAirtimePct(ap);
+  if(pct===Infinity)return '∞ (no throughput)';
+  const flag=pct>90?' ⚠':'';
+  return pct+'%'+flag+` @ ${parseFloat(SETTINGS.perClientMbps)||5} Mbps/client`;
+}
+
 function totalClientCapacity(){
   let n=0;
   for(const f of FLOORS)for(const ap of (f.APS||[]))n+=(ap.capacityClients||25);
@@ -1015,6 +1070,17 @@ function showValidation(){
       warns.push(`${offenders.length} device name${offenders.length===1?'':'s'} break the "${SETTINGS.namePattern}" convention (${shown}${offenders.length>3?', …':''}) — Inventory → Auto-rename fixes them.`);
     }
   }
+  // Per-AP airtime utilization (this floor). Demand = clients × per-client
+  // Mbps vs what the cell actually delivers on average.
+  if(hasMap){
+    for(const ap of APS()){
+      if(!(ap.capacityClients>0))continue;
+      const pct=apAirtimePct(ap,f);
+      if(pct===Infinity)errors.push(`${ap.name}: expected ${ap.capacityClients} clients but the cell delivers no usable throughput.`);
+      else if(pct>100)errors.push(`${ap.name}: airtime ~${pct}% — ${ap.capacityClients} clients × ${parseFloat(SETTINGS.perClientMbps)||5} Mbps exceeds what this cell can carry.`);
+      else if(pct>80)warns.push(`${ap.name}: airtime ~${pct}% — near saturation; consider a wider channel or another AP.`);
+    }
+  }
   // Client-capacity rollup (building-wide; only when an expectation is set).
   const expected=parseInt(SETTINGS.expectedClients,10)||0;
   if(expected>0){
@@ -1022,13 +1088,22 @@ function showValidation(){
     if(cap<expected)warns.push(`Client capacity ${cap} < expected ${expected} — consider more/denser APs.`);
     else infos.push(`Client capacity ${cap} ≥ expected ${expected}.`);
   }
+  // Camera storage rollup (building-wide).
+  const storGb=totalStorageGb();
+  if(storGb>0){
+    const days=parseInt(SETTINGS.retentionDays,10)||30;
+    infos.push(`Camera recording needs ~${storGb>=1000?(storGb/1000).toFixed(2)+' TB':Math.round(storGb)+' GB'} of NVR storage for ${days}-day retention (${SETTINGS.storageCodec==='h264'?'H.264':'H.265'}).`);
+  }
 
   const wrap=document.createElement('div');
   wrap.style.cssText='font-family:Rajdhani,sans-serif;font-size:13px';
-  if(!errors.length&&!warns.length&&!infos.length){
+  // The ✓ banner keys off problems only — informational lines (e.g. the NVR
+  // storage rollup) still print below a passing result.
+  if(!errors.length&&!warns.length){
     const ok=document.createElement('div');ok.style.cssText='color:#1e7d3c;font-weight:700;font-size:15px;padding:6px 0';
     ok.textContent='✓ All checks passed.';wrap.appendChild(ok);
-  }else{
+  }
+  {
     const group=(title,items,color,icon)=>{
       if(!items.length)return;
       const h=document.createElement('div');h.style.cssText=`font-weight:700;margin:10px 0 4px;color:${color}`;h.textContent=`${icon} ${title} (${items.length})`;wrap.appendChild(h);
@@ -1301,6 +1376,231 @@ function importSvgWalls(input){
   };
   reader.readAsText(file);
   input.value='';
+}
+
+// ═══ DXF WALL IMPORT ══════════════════════════════
+// DXF is Y-up; images are Y-down, so the vertical axis flips. The drawing's
+// extents are fitted into the floor image with a small margin. With no plan
+// loaded yet, a blank white canvas matched to the drawing's aspect is created
+// so walls-only DXF handoffs still produce a usable floor.
+function importDxfWalls(input){
+  const file=input.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=async e=>{
+    try{
+      const {segments,minX,minY,maxX,maxY}=parseDxf(String(e.target.result||''));
+      if(!segments.length){toast('No LINE/POLYLINE entities found in that DXF');return;}
+      const spanX=Math.max(1e-9,maxX-minX),spanY=Math.max(1e-9,maxY-minY);
+      let w=mapImg.naturalWidth,h=mapImg.naturalHeight;
+      if(!w||!h){
+        const long=1600;
+        w=spanX>=spanY?long:Math.max(200,Math.round(long*spanX/spanY));
+        h=spanX>=spanY?Math.max(200,Math.round(long*spanY/spanX)):long;
+        const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+        const ctx=cv.getContext('2d');ctx.fillStyle='#ffffff';ctx.fillRect(0,0,w,h);
+        await _applyMapDataUrl(cv.toDataURL('image/png'),file.name.replace(/\.[^/.]+$/,''),file.name+' (blank canvas)');
+      }
+      const margin=0.03;
+      const k=Math.min(w*(1-2*margin)/spanX,h*(1-2*margin)/spanY);
+      const ox=(w-spanX*k)/2, oy=(h-spanY*k)/2;
+      snapshot();
+      for(const s of segments){
+        const x1=ox+(s.x1-minX)*k, y1=oy+(maxY-s.y1)*k;
+        const x2=ox+(s.x2-minX)*k, y2=oy+(maxY-s.y2)*k;
+        WALLS().push({id:'w'+(++nid),fx1:x1/w,fy1:y1/h,fx2:x2/w,fy2:y2/h,material:'drywall'});
+      }
+      invalidateCoverageCache();
+      render();renderList();calcCoverage();
+      toast(`Imported ${segments.length} walls from DXF`);
+    }catch(err){
+      toast('DXF import failed: '+(err&&err.message||err));
+    }
+  };
+  reader.readAsText(file);
+  input.value='';
+}
+
+// ═══ EKAHAU .ESX IMPORT / EXPORT ══════════════════
+// Best-effort interop: floors (plan image + scale), walls (material-mapped)
+// and AP positions/names/channels round-trip; Plexus-specific data (switches,
+// cameras, IPAM, inventory) stays on our side.
+function importEsxFile(input){
+  const file=input.files[0];if(!file)return;
+  toast('Reading Ekahau project…');
+  file.arrayBuffer()
+    .then(buf=>importEsx(new Uint8Array(buf)))
+    .then(async ({floors,warnings})=>{
+      if(!floors.length){toast('No floors found in that .esx');return;}
+      snapshot();
+      const firstNew=FLOORS.length;
+      for(const ef of floors){
+        const floor={id:'f'+(++nid),name:ef.name,img:'',imgId:'',imgName:'',APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[],ANNOS:[],SAMPLES:[],scaleM:ef.scaleM||100};
+        for(const wl of ef.walls)floor.WALLS.push({id:'w'+(++nid),...wl});
+        for(const ap of ef.aps){
+          floor.APS.push({
+            id:'ap'+(++nid),name:ap.name,fx:ap.fx,fy:ap.fy,
+            model:MODELS.includes(ap.model)?ap.model:'Custom/Other',
+            freq:'2.4 / 5 GHz',sig:'strong',
+            r:Math.round(25*100/(floor.scaleM||100)),
+            channel:ap.channel||'auto',txPower:'auto',
+            ...(Number.isFinite(ap.txPowerDbm)?{txPowerDbm:ap.txPowerDbm}:{}),
+          });
+        }
+        if(ef.imageBytes&&ef.imageBytes.length){
+          const b=ef.imageBytes;
+          const mime=b[0]===0x89?'image/png':'image/jpeg';
+          const dataUrl=await new Promise(res=>{
+            const fr=new FileReader();fr.onload=()=>res(fr.result);fr.readAsDataURL(new Blob([b],{type:mime}));
+          });
+          try{
+            const id=_newImgId();
+            await idbPutImage(id,dataUrl);
+            _imgCache.set(id,dataUrl);
+            floor.imgId=id;floor.imgName=ef.name;
+          }catch(_){floor.img=dataUrl;floor.imgName=ef.name;}
+        }
+        FLOORS.push(floor);
+      }
+      // Migration pass fills schema defaults on everything just imported.
+      migrateProject({version:PROJECT_VERSION,floors:FLOORS});
+      syncNidFromFloors();
+      switchFloor(firstNew);
+      warnings.forEach(w=>console.warn('[esx import]',w));
+      toast(`Imported ${floors.length} floor(s) from Ekahau${warnings.length?` — ${warnings.length} warning(s) in console`:''}`);
+    })
+    .catch(err=>toast('ESX import failed: '+(err&&err.message||err)));
+  input.value='';
+}
+async function doExportEsx(){
+  toast('Building .esx…');
+  const floors=[];
+  for(const f of FLOORS){
+    let imageBytes=null,imgW=1000,imgH=800;
+    const src=await resolveFloorImage(f).catch(()=>f.img||'');
+    if(src){
+      const m=/^data:[^;]+;base64,(.*)$/s.exec(src);
+      if(m)imageBytes=Uint8Array.from(atob(m[1]),c=>c.charCodeAt(0));
+      const dim=await new Promise(res=>{
+        const im=new Image();
+        im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});
+        im.onerror=()=>res(null);
+        im.src=src;
+      });
+      if(dim&&dim.w){imgW=dim.w;imgH=dim.h;}
+    }
+    floors.push({
+      name:f.name,imgW,imgH,scaleM:f.scaleM||100,imageBytes,
+      walls:(f.WALLS||[]).map(w=>({fx1:w.fx1,fy1:w.fy1,fx2:w.fx2,fy2:w.fy2,material:w.material})),
+      aps:(f.APS||[]).map(a=>({name:a.name,fx:a.fx,fy:a.fy,model:a.model,channel:a.channel,txPowerDbm:a.txPowerDbm})),
+    });
+  }
+  const bytes=buildEsxZip(floors,{projectName:SETTINGS.company||'Plexus'});
+  _downloadFile('plexus-project.esx',bytes,'application/octet-stream');
+  toast('Ekahau .esx exported (best-effort — verify in Ekahau)');
+}
+
+// ═══ UNIFI CONTROLLER SYNC (desktop app only) ═════
+// Pull: match controller devices to planned devices (MAC first, then name)
+// and fill in as-built inventory (IP, firmware, serial) + set Live status.
+// Push: send the channel/width/tx plan to matching APs. All network traffic
+// runs in the Electron main process (self-signed controller certs).
+let _unifiPass='';   // session-only, never saved to SETTINGS or project files
+function _applyUnifiDevices(devices){
+  const norm=m=>String(m||'').toLowerCase().replace(/[^0-9a-f]/g,'');
+  const all=[];
+  for(const f of FLOORS)for(const list of [f.APS,f.SWS,f.CAMS])for(const d of (list||[]))all.push(d);
+  let matched=0;
+  snapshot();
+  for(const dev of devices){
+    const dm=norm(dev.mac);
+    let target=(dm&&all.find(x=>norm(x.mac)===dm))||null;
+    if(!target&&dev.name)target=all.find(x=>(x.name||'').toLowerCase()===dev.name.toLowerCase())||null;
+    if(!target)continue;
+    matched++;
+    if(dev.ip)target.ip=dev.ip;
+    if(dev.mac&&!target.mac)target.mac=dev.mac;
+    if(dev.version)target.firmware=dev.version;
+    if(dev.serial&&!target.serial)target.serial=dev.serial;
+    if(dev.state===1)target.status='live';
+  }
+  render();renderList();renderRP();autosave();
+  return matched;
+}
+function _unifiChannelPlan(){
+  const changes=[];
+  for(const f of FLOORS)for(const ap of (f.APS||[])){
+    const ch=_parseChannel(ap.channel);
+    if(ch==null)continue;
+    changes.push({
+      mac:ap.mac||'',name:ap.name||'',
+      band:bandKey(ap.freq),channel:ch,width:ap.chanWidth||20,
+      txPowerDbm:Number.isFinite(ap.txPowerDbm)?ap.txPowerDbm:undefined,
+    });
+  }
+  return changes;
+}
+function showUnifiDialog(){
+  if(!(window.plexusNative&&window.plexusNative.unifiPull)){
+    toast('UniFi sync needs the desktop app');return;
+  }
+  const wrap=document.createElement('div');wrap.className='settings-form';
+  const field=(label,type,value,placeholder)=>{
+    const row=document.createElement('div');row.className='ep-row';
+    const lbl=document.createElement('label');lbl.className='ep-lbl';lbl.textContent=label;
+    const inp=document.createElement('input');inp.className='ep-in';inp.type=type;
+    inp.value=value||'';inp.placeholder=placeholder||'';
+    if(type==='password')inp.autocomplete='new-password';
+    row.append(lbl,inp);wrap.appendChild(row);
+    return inp;
+  };
+  const url=field('Controller URL','text',SETTINGS.unifiUrl,'https://192.168.1.1');
+  const site=field('Site','text',SETTINGS.unifiSite||'default','default');
+  const user=field('Username','text',SETTINGS.unifiUser,'admin');
+  const pass=field('Password','password',_unifiPass,'');
+  const status=document.createElement('div');
+  status.style.cssText='font-family:"Share Tech Mono";font-size:11px;white-space:pre-wrap;margin:8px 0;min-height:16px';
+  const saveFields=()=>{
+    SETTINGS.unifiUrl=(url.value||'').trim();
+    SETTINGS.unifiSite=(site.value||'default').trim();
+    SETTINGS.unifiUser=(user.value||'').trim();
+    _unifiPass=pass.value||'';
+  };
+  const cfg=()=>({url:SETTINGS.unifiUrl,site:SETTINGS.unifiSite,user:SETTINGS.unifiUser,pass:_unifiPass});
+  const btnRow=document.createElement('div');btnRow.className='ep-btn-row';
+  const mkBtn=(label,title)=>{
+    const b=document.createElement('button');b.className='btn';b.textContent=label;b.title=title;
+    btnRow.appendChild(b);return b;
+  };
+  const pullBtn=mkBtn('⇊ Pull devices','Fetch the controller device list and fill in IP / firmware / serial / Live status');
+  const pushBtn=mkBtn('⇈ Push channel plan','Write planned channels/width/tx-power to matching APs on the controller');
+  const busy=(on)=>{pullBtn.disabled=on;pushBtn.disabled=on;};
+  pullBtn.addEventListener('click',async()=>{
+    saveFields();busy(true);status.textContent='Connecting…';
+    const res=await window.plexusNative.unifiPull(cfg());
+    busy(false);
+    if(!res.ok){status.textContent='✕ '+res.error;return;}
+    const n=_applyUnifiDevices(res.devices);
+    status.textContent=`✓ Controller reports ${res.devices.length} device(s); matched ${n} to this plan (by MAC, then name). IP / firmware / serial / status updated.`;
+  });
+  pushBtn.addEventListener('click',async()=>{
+    saveFields();
+    const changes=_unifiChannelPlan();
+    if(!changes.length){status.textContent='✕ No APs with a concrete channel — run ⌁ Auto-channel first.';return;}
+    if(!confirm(`Push channel/width/tx settings for ${changes.length} AP(s) to the controller? Radios will briefly drop clients when they retune.`))return;
+    busy(true);status.textContent='Pushing…';
+    const res=await window.plexusNative.unifiPush({...cfg(),changes});
+    busy(false);
+    if(!res.ok){status.textContent='✕ '+res.error;return;}
+    const okN=res.results.filter(r=>r.ok).length;
+    const fails=res.results.filter(r=>!r.ok);
+    status.textContent=`✓ Updated ${okN}/${res.results.length} AP(s).`+(fails.length?'\n'+fails.map(f=>`  ✕ ${f.name}: ${f.error}`).join('\n'):'');
+  });
+  wrap.appendChild(btnRow);
+  wrap.appendChild(status);
+  const hint=document.createElement('div');hint.className='ep-hint';
+  hint.textContent='Works with UniFi OS consoles (UDM/UDR/Cloud Key Gen2) and the legacy software controller. The password is kept for this session only — it is never written to the project file or autosave.';
+  wrap.appendChild(hint);
+  showModalNode('UniFi controller sync',wrap,()=>{saveFields();autosave();});
 }
 
 // ═══ SAVE / LOAD PROJECT ══════════════════════════
@@ -1745,7 +2045,7 @@ function setMode(m){
   if(m!=='wall'){wallStart=null;wallHover=null;renderWallPreview();}
   // Clear annotation drag when leaving annotation mode
   if(m!=='anno'){annoStart=null;annoHover=null;renderAnnoPreview();}
-  ['add','sel','dz','sw','cam','ruler','wall','anno'].forEach(mm=>document.getElementById('btn-'+mm)?.classList.toggle('active',mm===m));
+  ['add','sel','dz','sw','cam','ruler','wall','anno','survey'].forEach(mm=>document.getElementById('btn-'+mm)?.classList.toggle('active',mm===m));
   viewport.className=m==='sel'?'':m==='dz'?'cur-cell':m==='sw'?'cur-cell':m==='cam'?'cur-cell':'cur-cross';
   // Show/hide the annotation sub-mode chooser (text / arrow / dim).
   const subBar=document.getElementById('anno-sub-bar');
@@ -1786,7 +2086,7 @@ viewport.addEventListener('click',e=>{
       pattern:'omni',heading:0,swId:'',
       antennaGainDbi:AP_ANTENNA_GAIN_DBI[defaultModel]??4,
       cableLossDb:0,txPowerDbm:20,mountHeightM:2.7,downtiltDeg:0,
-      capacityClients:25,
+      capacityClients:25,chanWidth:40,
     });
     sel(id,'ap');setMode('sel');render();renderList();calcCoverage();toast('AP placed — edit in panel');
   }else if(mode==='dz'){
@@ -1845,6 +2145,26 @@ viewport.addEventListener('click',e=>{
     } else {
       commitAnno(x,y);
     }
+  }else if(mode==='survey'){
+    // Live survey (desktop app): click = "I'm standing here", sample the OS's
+    // current WiFi connection and drop a survey point at the click.
+    if(!(window.plexusNative&&window.plexusNative.wifiSample)){
+      toast('Live survey needs the desktop app');return;
+    }
+    toast('Sampling WiFi…');
+    window.plexusNative.wifiSample().then(res=>{
+      if(!res||!res.ok){toast('WiFi sample failed: '+((res&&res.error)||'no WiFi info'));return;}
+      snapshot();
+      SAMPLES().push({
+        id:'s'+(++nid),fx,fy,
+        ssid:res.ssid||'',bssid:res.bssid||'',
+        rssi:Number.isFinite(res.rssi)?res.rssi:-95,
+        channel:res.channel!=null?String(res.channel):'',
+        floorName:F().name||'',
+      });
+      render();
+      toast(`Sampled ${res.rssi} dBm${res.ssid?' on '+res.ssid:''}${res.channel?` · ch ${res.channel}`:''}`);
+    });
   }else{
     desel();render();
   }
@@ -1997,7 +2317,67 @@ function renderWalls(){
       mkVert(px.x2,px.y2,'b');
     }
   });
+  // Auto-detected wall candidates awaiting the user's accept/discard choice.
+  if(_detectedWallPreview){
+    const w=mapImg.naturalWidth||1,h=mapImg.naturalHeight||1;
+    for(const s of _detectedWallPreview){
+      const ln=mk('line');
+      ln.setAttribute('x1',s.fx1*w);ln.setAttribute('y1',s.fy1*h);
+      ln.setAttribute('x2',s.fx2*w);ln.setAttribute('y2',s.fy2*h);
+      ln.setAttribute('class','wall-line');
+      ln.setAttribute('stroke','#1565c0');
+      ln.setAttribute('stroke-width','2.5');
+      ln.setAttribute('stroke-dasharray','6 4');
+      ln.setAttribute('opacity','.85');
+      wallLayer.appendChild(ln);
+    }
+  }
   renderWallPreview();
+}
+
+// ── Automatic wall detection ──────────────────────────────────────────────
+// Rasterize the floor plan (downscaled), run the Hough-based detector, and
+// preview the candidates as dashed blue lines behind a confirm dialog.
+let _detectedWallPreview=null;
+function detectWallsFromMap(){
+  const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
+  if(!w||!h){toast('Upload a floor plan first');return;}
+  toast('Detecting walls…');
+  // Let the toast paint before the (CPU-bound) detection pass runs.
+  setTimeout(()=>{
+    try{
+      const MAX=900;
+      const k=Math.min(1,MAX/Math.max(w,h));
+      const cw=Math.max(1,Math.round(w*k)),ch=Math.max(1,Math.round(h*k));
+      const cv=document.createElement('canvas');cv.width=cw;cv.height=ch;
+      const ctx=cv.getContext('2d',{willReadFrequently:true});
+      ctx.fillStyle='#fff';ctx.fillRect(0,0,cw,ch);   // flatten transparency
+      ctx.drawImage(mapImg,0,0,cw,ch);
+      const segs=detectWalls(ctx.getImageData(0,0,cw,ch));
+      if(!segs.length){toast('No wall-like lines found — try the SVG/DXF import instead');return;}
+      _detectedWallPreview=segs.map(s=>({fx1:s.x1/cw,fy1:s.y1/ch,fx2:s.x2/cw,fy2:s.y2/ch}));
+      renderWalls();
+      showModalText(
+        'Wall detection',
+        `Found ${segs.length} straight wall candidates (previewed as dashed blue lines). Add them as drywall walls? You can re-material or delete individual walls afterwards.`,
+        ()=>{
+          snapshot();
+          for(const s of _detectedWallPreview){
+            WALLS().push({id:'w'+(++nid),...s,material:'drywall'});
+          }
+          const n=_detectedWallPreview.length;
+          _detectedWallPreview=null;
+          invalidateCoverageCache();
+          render();renderList();calcCoverage();
+          toast(`Added ${n} detected walls`);
+        },
+        ()=>{_detectedWallPreview=null;renderWalls();},
+      );
+    }catch(err){
+      _detectedWallPreview=null;
+      toast('Wall detection failed: '+(err&&err.message||err));
+    }
+  },30);
 }
 
 // Wall-vertex drag state — set when the user grabs an endpoint handle.
@@ -2412,6 +2792,17 @@ function renderCables(){
 // Cameras render as a triangular "field-of-view" cone (the visible area the
 // camera can see) plus a small lens marker at the position. Heading rotates
 // the cone around the position. 360° fisheye cameras get a ring instead.
+// Wedge (or full-circle) path for a camera's view area.
+function _camWedgePath(cx,cy,r,heading,fov){
+  if(fov>=350)return null;   // caller draws a <circle> instead
+  const half=fov/2;
+  const a1=(heading-half)*Math.PI/180;
+  const a2=(heading+half)*Math.PI/180;
+  const x1=cx+Math.cos(a1)*r, y1=cy+Math.sin(a1)*r;
+  const x2=cx+Math.cos(a2)*r, y2=cy+Math.sin(a2)*r;
+  const largeArc=fov>180?1:0;
+  return `M${cx},${cy} L${x1.toFixed(1)},${y1.toFixed(1)} A${r},${r} 0 ${largeArc} 1 ${x2.toFixed(1)},${y2.toFixed(1)} Z`;
+}
 function renderCAMs(){
   camLayer.innerHTML='';
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
@@ -2449,6 +2840,33 @@ function renderCAMs(){
     cone.style.stroke=color;
     if(statusDimmed(c))cone.setAttribute('opacity','.15');
     camLayer.appendChild(cone);
+
+    // DORI pixel-density bands (IEC 62676-4). Stacked translucent wedges,
+    // strongest tier innermost — the compounded tint reads as a gradient of
+    // "how much detail you actually get" inside the raw view cone.
+    if(SETTINGS.showDori!==false && Number.isFinite(scaleM) && scaleM>0 && !statusDimmed(c)){
+      const mpp=scaleM/100;
+      const bands=doriDistancesM(c.resolution||'4K',fov);
+      for(const b of bands){
+        const rPx=b.m/mpp;
+        if(!(rPx>0)||rPx>=range)continue;   // tier reaches past the cone — no ring to draw
+        let el;
+        if(fov>=350){
+          el=mk('circle');
+          el.setAttribute('cx',cx);el.setAttribute('cy',cy);el.setAttribute('r',rPx);
+        }else{
+          el=mk('path');
+          el.setAttribute('d',_camWedgePath(cx,cy,rPx,heading,fov));
+        }
+        el.setAttribute('fill',b.color);
+        el.setAttribute('fill-opacity','.10');
+        el.setAttribute('stroke',b.color);
+        el.setAttribute('stroke-opacity','.55');
+        el.setAttribute('stroke-width','1');
+        el.style.pointerEvents='none';
+        camLayer.appendChild(el);
+      }
+    }
 
     // Lens marker at position.
     const lens=mk('circle');
@@ -2554,6 +2972,14 @@ function chanOverlap(a,b){
   if(_is24Channel(ai)&&_is24Channel(bi)&&Math.abs(ai-bi)<5)return true;
   return false;
 }
+// Width- and band-aware overlap between two APs: do their occupied frequency
+// ranges intersect? Falls back to the legacy channel-number heuristic when
+// either channel is 'auto'/unparsable.
+function apChansOverlap(a,b){
+  const ai=_parseChannel(a.channel),bi=_parseChannel(b.channel);
+  if(ai==null||bi==null)return false;
+  return channelsOverlapMhz(bandKey(a.freq),ai,a.chanWidth||20,bandKey(b.freq),bi,b.chanWidth||20);
+}
 function renderChannelOverlap(){
   chOverlapLayer.innerHTML='';
   const w=mapImg.naturalWidth,h=mapImg.naturalHeight;
@@ -2561,7 +2987,7 @@ function renderChannelOverlap(){
   const aps=APS();
   for(let i=0;i<aps.length;i++)for(let j=i+1;j<aps.length;j++){
     const a=aps[i],b=aps[j];
-    if(!chanOverlap(a.channel,b.channel))continue;
+    if(!apChansOverlap(a,b))continue;
     const ax=a.fx*w,ay=a.fy*h,bx=b.fx*w,by=b.fy*h;
     const dist=Math.hypot(ax-bx,ay-by);
     // Only flag pairs whose coverage areas overlap — otherwise interference
@@ -2645,77 +3071,109 @@ function _bandMatches(ap,bandFilter){
   if(bandFilter==='6')  return f.indexOf('6 GHz')>=0;
   return true;
 }
-function _bestMetricAt(metric,x,y,aps,neighbour,walls,w,h,propModel,slab,noiseFloor){
-  let best=-Infinity;
-  for(const ap of aps){
-    const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
-    const opts={
-      bandFactor:bandLossMultiplier(ap.freq),
-      arcDeg:pat.arc,headingDeg:ap.heading||0,
-      eirpDbm:effectiveEirp(ap),
-      noiseFloorDbm:noiseFloor,
-      model:propModel,
-      metersPerPx:(scaleM||100)/100,
-    };
-    let v=null;
-    if(metric==='dbm') v=dbmAt(ap,x,y,w,h,walls,opts);
-    else if(metric==='snr') v=snrAt(ap,x,y,w,h,walls,opts);
-    else if(metric==='mcs'){
-      const snr=snrAt(ap,x,y,w,h,walls,opts);
-      v=snr===null?null:mcsFromSnr(snr);
-    }else if(metric==='mbps') v=mbpsAt(ap,x,y,w,h,walls,opts);
-    if(v!==null && Number.isFinite(v) && v>best)best=v;
+// Serialize an AP into the plain shape the heatmap job needs (structured-
+// cloneable for the worker; no DOM objects, no cache fields).
+function _heatApShape(ap){
+  const pat=AP_PATTERNS[ap.pattern]||AP_PATTERNS.omni;
+  return {
+    fx:ap.fx,fy:ap.fy,r:ap.r,freq:ap.freq,
+    band:bandKey(ap.freq),
+    channel:_parseChannel(ap.channel),
+    widthMhz:CHANNEL_WIDTHS.includes(ap.chanWidth)?ap.chanWidth:20,
+    arcDeg:pat.arc,headingDeg:ap.heading||0,
+    eirpDbm:effectiveEirp(ap),
+    bandFactor:bandLossMultiplier(ap.freq),
+  };
+}
+// Build the current floor's heatmap job, or null when there's nothing to paint.
+function _heatJob(){
+  const w=mapImg.naturalWidth||0,h=mapImg.naturalHeight||0;
+  if(!w||!h)return null;
+  const mode=SETTINGS.heatmapMode||'rssi';
+  const modeDef=HEATMAP_MODES[mode]||HEATMAP_MODES.rssi;
+  const bandFilter=SETTINGS.heatmapBand||'all';
+  const aps=APS().filter(ap=>_bandMatches(ap,bandFilter)).map(_heatApShape);
+  const neighbour=[];
+  if(SETTINGS.showFloorLeakage){
+    if(curFloor-1>=0)for(const ap of (FLOORS[curFloor-1].APS||[]))if(_bandMatches(ap,bandFilter))neighbour.push(_heatApShape(ap));
+    if(curFloor+1<FLOORS.length)for(const ap of (FLOORS[curFloor+1].APS||[]))if(_bandMatches(ap,bandFilter))neighbour.push(_heatApShape(ap));
   }
-  for(const ap of neighbour){
-    const bf=bandLossMultiplier(ap.freq);
-    const dbm=dbmAtThroughSlab(ap,x,y,w,h,slab,bf,propModel,(scaleM||100)/100);
-    if(dbm===null)continue;
-    let v=null;
-    if(metric==='dbm') v=dbm;
-    else if(metric==='snr') v=dbm-noiseFloor;
-    else if(metric==='mcs') v=mcsFromSnr(dbm-noiseFloor);
-    else if(metric==='mbps'){
-      // Rough proxy: scale the MCS row mbps by 8 to approximate a multi-stream link.
-      const m=mcsFromSnr(dbm-noiseFloor);
-      v=m<0?0:m*8;
+  if(!aps.length&&!neighbour.length)return null;
+  return {
+    w,h,
+    step:Math.max(4,Math.round(Math.min(w,h)/120)),
+    metric:modeDef.metric,
+    aps,neighbour,
+    walls:WALLS().map(wl=>({fx1:wl.fx1,fy1:wl.fy1,fx2:wl.fx2,fy2:wl.fy2,material:wl.material})),
+    propModel:SETTINGS.propagationModel||'logd',
+    slabDb:Number.isFinite(SETTINGS.floorSlabAttenDb)?SETTINGS.floorSlabAttenDb:DEFAULT_FLOOR_SLAB_DB,
+    noiseFloorDbm:Number.isFinite(SETTINGS.noiseFloorDbm)?SETTINGS.noiseFloorDbm:-95,
+    metersPerPx:(scaleM||100)/100,
+    // Worker only compares thresholds; colours stay on this side.
+    stops:modeDef.stops.map(s=>({v:s.v})),
+  };
+}
+let _heatWorker=null,_heatWorkerBroken=false,_heatJobId=0,_heatJobColors=null,_heatJobMeta=null;
+function _getHeatWorker(){
+  if(_heatWorkerBroken)return null;
+  if(!_heatWorker){
+    try{
+      _heatWorker=new HeatWorker();
+      _heatWorker.onmessage=e=>_paintHeatResult(e.data);
+      // A worker-level error (e.g. CSP or bundling edge case): fall back to
+      // synchronous rendering for the rest of the session.
+      _heatWorker.onerror=()=>{
+        _heatWorkerBroken=true;
+        try{_heatWorker.terminate();}catch(_){/* already dead */}
+        _heatWorker=null;
+        renderHeat();
+      };
+    }catch(_){_heatWorkerBroken=true;_heatWorker=null;}
+  }
+  return _heatWorker;
+}
+function _paintHeatGrid(grid,cols,rows,step,colors){
+  const ctx=heatCanvas.getContext('2d');
+  ctx.clearRect(0,0,heatCanvas.width,heatCanvas.height);
+  for(let gy=0;gy<rows;gy++){
+    for(let gx=0;gx<cols;gx++){
+      const idx=grid[gy*cols+gx];
+      if(idx<0)continue;
+      ctx.fillStyle=colors[idx];
+      ctx.fillRect(gx*step,gy*step,step,step);
     }
-    if(v!==null && Number.isFinite(v) && v>best)best=v;
   }
-  return best===-Infinity?null:best;
+}
+function _paintHeatResult(msg){
+  if(msg.jobId!==_heatJobId)return;   // stale — a newer job superseded it
+  if(msg.error){_heatWorkerBroken=true;renderHeat();return;}
+  if(!showHeat||!_heatJobColors)return;
+  _paintHeatGrid(new Int16Array(msg.buf),msg.cols,msg.rows,msg.step,_heatJobColors);
 }
 function renderHeat(){
   heatLayer.innerHTML='';
+  _heatJobId++;                       // invalidate any in-flight worker job
   if(!showHeat||!heatCanvas){heatCanvas.style.display='none';return;}
+  const job=_heatJob();
   const w=mapImg.naturalWidth||0,h=mapImg.naturalHeight||0;
-  if(!w||!h){heatCanvas.style.display='none';return;}
-  heatCanvas.width=w;heatCanvas.height=h;
+  if(!job){
+    if(w&&h){heatCanvas.width=w;heatCanvas.height=h;}
+    heatCanvas.style.display='none';
+    return;
+  }
+  if(heatCanvas.width!==w)heatCanvas.width=w;
+  if(heatCanvas.height!==h)heatCanvas.height=h;
   heatCanvas.style.width=w+'px';heatCanvas.style.height=h+'px';
   heatCanvas.style.display='block';
-  const ctx=heatCanvas.getContext('2d');
-  ctx.clearRect(0,0,w,h);
   const mode=SETTINGS.heatmapMode||'rssi';
-  const metric=(HEATMAP_MODES[mode]||HEATMAP_MODES.rssi).metric;
-  const bandFilter=SETTINGS.heatmapBand||'all';
-  const propModel=SETTINGS.propagationModel||'logd';
-  const noiseFloor=Number.isFinite(SETTINGS.noiseFloorDbm)?SETTINGS.noiseFloorDbm:-95;
-  const slab=Number.isFinite(SETTINGS.floorSlabAttenDb)?SETTINGS.floorSlabAttenDb:DEFAULT_FLOOR_SLAB_DB;
-  const aps=APS().filter(ap=>_bandMatches(ap,bandFilter));
-  const neighbour=[];
-  if(SETTINGS.showFloorLeakage){
-    if(curFloor-1>=0)for(const ap of (FLOORS[curFloor-1].APS||[]))if(_bandMatches(ap,bandFilter))neighbour.push(ap);
-    if(curFloor+1<FLOORS.length)for(const ap of (FLOORS[curFloor+1].APS||[]))if(_bandMatches(ap,bandFilter))neighbour.push(ap);
-  }
-  if(!aps.length && !neighbour.length)return;
-  const walls=WALLS();
-  const step=Math.max(4,Math.round(Math.min(w,h)/120));
-  for(let y=0;y<h;y+=step){
-    for(let x=0;x<w;x+=step){
-      const v=_bestMetricAt(metric,x,y,aps,neighbour,walls,w,h,propModel,slab,noiseFloor);
-      const color=_heatColorFor(mode,v);
-      if(!color)continue;
-      ctx.fillStyle=color;
-      ctx.fillRect(x,y,step,step);
-    }
+  _heatJobColors=(HEATMAP_MODES[mode]||HEATMAP_MODES.rssi).stops.map(s=>s.color);
+  const wk=_getHeatWorker();
+  if(wk){
+    job.jobId=_heatJobId;
+    wk.postMessage(job);              // paint happens in _paintHeatResult
+  }else{
+    const {grid,cols,rows}=computeHeatGrid(job);
+    _paintHeatGrid(grid,cols,rows,job.step,_heatJobColors);
   }
 }
 
@@ -3018,6 +3476,7 @@ function autoChannelPlan(){
     const candidates=list.filter(c=>!dfs.includes(c));
     const pool=candidates.length?candidates:list;
     let bestCh=pool[0], bestScore=Infinity;
+    const apWidth=ap.chanWidth||20;
     for(const ch of pool){
       let score=0;
       for(const other of aps){
@@ -3029,9 +3488,13 @@ function autoChannelPlan(){
         if(dist>=(ap.r+other.r)*0.9)continue;
         const otherCh=parseInt(String(other.channel||''),10);
         if(!Number.isFinite(otherCh))continue;
-        if(otherCh===ch)score+=10;
-        else if(band==='2.4' && Math.abs(otherCh-ch)<5)score+=5;
-        else if((band==='5'||band==='6') && Math.abs(otherCh-ch)<4)score+=1;
+        // Width-aware: spectrum overlap of the candidate (at this AP's width)
+        // vs the neighbour's actual channel+width is the real conflict test.
+        if(channelsOverlapMhz(band,ch,apWidth,band,otherCh,other.chanWidth||20)){
+          score+=otherCh===ch?10:5;
+        }else if((band==='5'||band==='6') && Math.abs(otherCh-ch)<4){
+          score+=1;   // adjacent-channel leakage penalty
+        }
       }
       if(score<bestScore){bestScore=score;bestCh=ch;}
     }
@@ -3141,6 +3604,15 @@ function _bomCsvString(){
     rows.push(['Cabling','Cable length incl. slack (m)',cable.totalM,'']);
     const boxM=parseFloat(SETTINGS.cableBoxM)||305;
     rows.push(['Cabling',`Cable boxes (${boxM} m)`,Math.ceil(cable.totalM/boxM),'']);
+  }
+  // NVR storage rollup for the camera fleet at the configured retention/codec.
+  const storGb=totalStorageGb();
+  if(storGb>0){
+    const days=parseInt(SETTINGS.retentionDays,10)||30;
+    const codec=SETTINGS.storageCodec==='h264'?'H.264':'H.265';
+    rows.push([]);
+    rows.push(['Storage',`NVR capacity for ${days} d retention (${codec})`,
+      storGb>=1000?(storGb/1000).toFixed(2)+' TB':Math.round(storGb)+' GB','']);
   }
   return rows.map(r=>r.map(_csvEscape).join(',')).join('\n');
 }
@@ -4185,6 +4657,21 @@ function renderRP(){
   else if(selType==='wall')renderWallPanel();
 }
 
+// Storage line for one camera at the project's retention/codec settings.
+function _camStorageLabel(c){
+  const days=parseInt(SETTINGS.retentionDays,10)||30;
+  const br=cameraBitrateMbps(c.resolution||'4K',SETTINGS.storageCodec,c.bitrateMbps);
+  const gb=storageGb(br,days);
+  return `${br} Mbps → ${gb>=1000?(gb/1000).toFixed(2)+' TB':Math.round(gb)+' GB'} / ${days} d`;
+}
+// Building-wide recording storage at the current retention/codec settings.
+function totalStorageGb(){
+  const days=parseInt(SETTINGS.retentionDays,10)||30;
+  let gb=0;
+  for(const f of FLOORS)for(const c of (f.CAMS||[]))
+    gb+=storageGb(cameraBitrateMbps(c.resolution||'4K',SETTINGS.storageCodec,c.bitrateMbps),days);
+  return gb;
+}
 function renderCAMPanel(){
   const c=CAMS().find(x=>x.id===selId);if(!c)return;
   document.getElementById('rp-head').textContent='Edit Camera';
@@ -4217,6 +4704,14 @@ function renderCAMPanel(){
       <input class="ep-rng" id="cam-heading" type="range" min="0" max="359" value="${Math.round(c.heading||0)}" data-input-action="upd-cam-heading"/>
       <span class="ep-rng-val" id="cam-heading-v">${Math.round(c.heading||0)}°</span>
     </div>
+    <div class="ep-section">DORI (IEC 62676-4)</div>
+    <div class="ep-row" style="font-family:'Share Tech Mono';font-size:11px;line-height:1.7;display:block">
+      ${doriDistancesM(c.resolution||'4K',Math.max(10,Math.min(360,c.fov||80))).map(b=>
+        `<span style="color:${b.color}">●</span> ${esc(b.label)} (${b.ppm} px/m) ≤ ${b.m>=100?Math.round(b.m):b.m.toFixed(1)} m<br>`).join('')}
+    </div>
+    <div class="ep-section">Recording</div>
+    <div class="ep-row"><label class="ep-lbl">Bitrate (Mbps)</label><input class="ep-in ep-mono" id="cam-bitrate" type="number" min="0" step="0.5" value="${c.bitrateMbps||''}" data-input-action="upd-cam" placeholder="auto: ${cameraBitrateMbps(c.resolution||'4K',SETTINGS.storageCodec)}"/></div>
+    <div class="ep-row"><label class="ep-lbl">Storage</label><span class="ep-rng-val" id="cam-storage-v">${_camStorageLabel(c)}</span></div>
     <div class="ep-section">Color</div>
     <div class="color-swatches">
       ${AP_COLORS.map(col=>{
@@ -4258,6 +4753,9 @@ function updCam(){
   c.swId=document.getElementById('cam-sw').value;
   const portEl=document.getElementById('cam-port');if(portEl)c.port=portEl.value;
   c.vlan=document.getElementById('cam-vlan').value;
+  const brEl=document.getElementById('cam-bitrate');
+  if(brEl){const br=parseFloat(brEl.value);c.bitrateMbps=Number.isFinite(br)&&br>0?br:0;}
+  const stEl=document.getElementById('cam-storage-v');if(stEl)stEl.textContent=_camStorageLabel(c);
   readInventoryBlock(c,'cam');
   c.notes=document.getElementById('cam-notes').value;
   const swChanged=c.swId!==prevSwId;
@@ -4365,7 +4863,14 @@ function renderAPPanel(){
     </div>
     <div class="ep-section">Radio</div>
     <div class="ep-row"><label class="ep-lbl">Channel</label><input class="ep-in ep-mono" id="ep-channel" value="${esc(ap.channel||'auto')}" data-input-action="upd-ap" placeholder="auto · 6 · 36 · 149 …"/></div>
+    <div class="ep-row"><label class="ep-lbl">Width (MHz)</label>
+      <select class="ep-sel" id="ep-chanwidth" data-input-action="upd-ap">
+        ${CHANNEL_WIDTHS.map(cw=>`<option value="${cw}"${(ap.chanWidth||20)===cw?' selected':''}>${cw} MHz${cw===320?' (WiFi 7)':''}</option>`).join('')}
+      </select></div>
     <div class="ep-row"><label class="ep-lbl">TX Power</label><input class="ep-in ep-mono" id="ep-txpower" value="${esc(ap.txPower||'auto')}" data-input-action="upd-ap" placeholder="auto · low · medium · high · 20 dBm"/></div>
+    <div class="ep-section">Capacity</div>
+    <div class="ep-row"><label class="ep-lbl">Clients</label><input class="ep-in ep-mono" id="ep-clients" type="number" min="0" max="500" value="${ap.capacityClients??25}" data-input-action="upd-ap" title="Expected concurrent clients on this AP"/></div>
+    <div class="ep-row"><label class="ep-lbl">Airtime est.</label><span class="ep-rng-val" id="ep-airtime-v">${_airtimeLabel(ap)}</span></div>
     <div class="ep-section">Network Info</div>
     <div class="ep-row"><label class="ep-lbl">IP Address</label><input class="ep-in" id="ep-ip" value="${esc(ap.ip||'')}" data-input-action="upd-ap" placeholder="192.168.1.x"/><button class="btn" style="flex:0 0 auto;padding:4px 8px" data-action="suggest-ip-ap" title="Suggest next free IP in this device's VLAN subnet">IP+</button></div>
     <div class="ep-row"><label class="ep-lbl">MAC Address</label><input class="ep-in ep-mono" id="ep-mac" value="${ap.mac||''}" data-input-action="upd-ap" placeholder="aa:bb:cc:dd:ee:ff"/></div>
@@ -4481,7 +4986,12 @@ function updAP(){
     invalidateCoverageCache();
   }
   const chEl=document.getElementById('ep-channel');if(chEl)ap.channel=chEl.value;
+  const cwEl=document.getElementById('ep-chanwidth');
+  if(cwEl){const cw=parseInt(cwEl.value,10);ap.chanWidth=CHANNEL_WIDTHS.includes(cw)?cw:20;}
   const pwEl=document.getElementById('ep-txpower');if(pwEl)ap.txPower=pwEl.value;
+  const clEl=document.getElementById('ep-clients');
+  if(clEl){const n=parseInt(clEl.value,10);if(Number.isFinite(n)&&n>=0)ap.capacityClients=n;}
+  const atEl=document.getElementById('ep-airtime-v');if(atEl)atEl.textContent=_airtimeLabel(ap);
   ap.ip=document.getElementById('ep-ip').value;
   ap.mac=document.getElementById('ep-mac').value;
   const prevSwId=ap.swId;
@@ -5225,6 +5735,11 @@ renderFloorTabs();renderList();renderRP();applySettingsToBrand();
 const CLICK_ACTIONS={
   'open-upload':   ()=>document.getElementById('file-up').click(),
   'open-svg':      ()=>document.getElementById('svg-up').click(),
+  'detect-walls':  ()=>detectWallsFromMap(),
+  'open-dxf':      ()=>document.getElementById('dxf-up')?.click(),
+  'open-esx':      ()=>document.getElementById('esx-up')?.click(),
+  'export-esx':    ()=>doExportEsx(),
+  'show-unifi':    ()=>showUnifiDialog(),
   'open-load':     ()=>document.getElementById('load-up').click(),
   'load-sample':   ()=>loadSampleProject(),
   'save':          ()=>saveProject(),
@@ -5305,6 +5820,8 @@ document.addEventListener('change',e=>{
   const a=t.dataset.changeAction;
   if(a==='upload-map')uploadMap(t);
   else if(a==='import-svg-walls')importSvgWalls(t);
+  else if(a==='import-dxf-walls')importDxfWalls(t);
+  else if(a==='import-esx')importEsxFile(t);
   else if(a==='load-project')loadProject(t);
   else if(a==='toggle-lock')toggleLock();
   else if(a==='upd-wall')updWall();
@@ -5585,7 +6102,17 @@ function showSettings(){
   addNumber('cableRoutingFactor','Cable routing factor',1,3,0.05);
   addNumber('cableBoxM','Cable box length (m)',1,1000,1);
   addNumber('expectedClients','Expected concurrent clients',0,100000,1);
+  addNumber('perClientMbps','Per-client demand (Mbps)',0.5,100,0.5);
   addCheck('colorByVlan','Colour devices by VLAN on the map');
+
+  // ── Cameras: DORI + storage ──
+  addHeading('Cameras');
+  addCheck('showDori','Show DORI pixel-density bands in camera cones');
+  addNumber('retentionDays','Video retention (days)',1,365,1);
+  addSelect('storageCodec','Recording codec',[
+    {value:'h265',label:'H.265 / HEVC'},
+    {value:'h264',label:'H.264 / AVC'},
+  ]);
 
   // ── VLAN registry ──
   addHeading('VLANs');
@@ -5630,19 +6157,19 @@ function showSettings(){
   const apply=()=>{
     let changed=false;
     // Strings
-    for(const k of ['company','tagline','contact','metaLine','reportTitle','footerLine','logoDataUrl','locale','language','propagationModel','regulatoryRegion','heatmapMode','heatmapBand','archScale','siteCode','namePattern']){
+    for(const k of ['company','tagline','contact','metaLine','reportTitle','footerLine','logoDataUrl','locale','language','propagationModel','regulatoryRegion','heatmapMode','heatmapBand','archScale','siteCode','namePattern','storageCodec','unifiUrl','unifiSite','unifiUser']){
       if(!inputs[k])continue;
       const val=(inputs[k].value||'').trim();
       if(String(SETTINGS[k]||'')!==val){SETTINGS[k]=val;changed=true;}
     }
     // Numbers
-    for(const k of ['noiseFloorDbm','floorSlabAttenDb','cableRoutingFactor','cableBoxM','expectedClients']){
+    for(const k of ['noiseFloorDbm','floorSlabAttenDb','cableRoutingFactor','cableBoxM','expectedClients','perClientMbps','retentionDays']){
       if(!inputs[k])continue;
       const v=parseFloat(inputs[k].value);
       if(Number.isFinite(v)&&SETTINGS[k]!==v){SETTINGS[k]=v;changed=true;}
     }
     // Bools
-    for(const k of ['showRoamingOverlap','showFloorLeakage','colorByVlan']){
+    for(const k of ['showRoamingOverlap','showFloorLeakage','colorByVlan','showDori']){
       if(!inputs[k])continue;
       const v=!!inputs[k].checked;
       if(SETTINGS[k]!==v){SETTINGS[k]=v;changed=true;}
@@ -5849,6 +6376,13 @@ const IS_ELECTRON=/electron/i.test((typeof navigator!=='undefined'&&navigator.us
 if(IS_ELECTRON){
   const sb=document.querySelector('[data-action="share-link"]');
   if(sb)sb.style.display='none';
+}
+// Desktop-only features (need the preload bridge): live survey + UniFi sync.
+if(typeof window!=='undefined'&&window.plexusNative){
+  const sv=document.getElementById('btn-survey');
+  if(sv)sv.style.display='';
+  const un=document.getElementById('btn-unifi');
+  if(un)un.style.display='';
 }
 
 // Small delay to let browser lay out the image, then offer to restore.

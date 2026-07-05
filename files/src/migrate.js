@@ -4,7 +4,7 @@
 import {WALL_MATERIALS} from './geometry.js';
 import {AP_ANTENNA_GAIN_DBI,DEVICE_STATUSES} from './constants.js';
 
-export const PROJECT_VERSION=9;
+export const PROJECT_VERSION=10;
 
 // Settings that apply project-wide (branding, RF assumptions, region, defaults).
 // `coverageOpacity` / `lastModel` are user-preference style and live here too.
@@ -40,6 +40,14 @@ export const DEFAULT_SETTINGS={
   // v9 (schema) additions — organization features
   siteCode:         '',               // short site tag for the naming convention, e.g. "HQ"
   namePattern:      '',               // device naming convention, e.g. "{site}-F{floor}-{type}{nn}"
+  // v10 additions — SINR/airtime, camera DORI + storage, UniFi controller
+  perClientMbps:    5,                // per-client demand (Mbps) for airtime estimates
+  showDori:         true,             // render DORI pixel-density bands in camera cones
+  retentionDays:    30,               // video retention for the storage calculator
+  storageCodec:     'h265',           // 'h264' | 'h265' — scales camera bitrate estimates
+  unifiUrl:         '',               // UniFi controller base URL (Electron builds only)
+  unifiSite:        'default',        // UniFi site name
+  unifiUser:        '',               // UniFi username (password is session-only)
 };
 
 const DEFAULT_FLOOR_SCALE_M=100;
@@ -62,6 +70,9 @@ const DEFAULT_FLOOR_SCALE_M=100;
 //   v8 → v9: APs/cameras/switches gain install status + inventory fields
 //            (serial/assetTag/firmware, mac everywhere); revisions gain a
 //            baseline flag; settings gain siteCode + namePattern.
+//   v9 → v10: APs gain chanWidth (MHz); cameras gain bitrateMbps (0 = auto
+//            from resolution); settings gain perClientMbps/showDori/
+//            retentionDays/storageCodec + UniFi controller fields.
 export function migrateProject(data){
   const warnings=[];
   if(!data||typeof data!=='object'){throw new Error('Not a Plexus project file');}
@@ -128,6 +139,8 @@ export function migrateProject(data){
       if(typeof ap.downtiltDeg!=='number')ap.downtiltDeg=0;
       if(typeof ap.capacityClients!=='number')ap.capacityClients=25;
       if(typeof ap.comment!=='string')ap.comment='';
+      // v9→v10: channel width. 20 MHz keeps pre-v10 SNR/throughput unchanged.
+      if(![20,40,80,160,320].includes(ap.chanWidth))ap.chanWidth=20;
       inv(ap);
     });
     (f.DZS||[]).forEach(dz=>{
@@ -155,6 +168,8 @@ export function migrateProject(data){
       if(typeof cam.swId!=='string')cam.swId='';
       if(!cam.resolution)cam.resolution='4K';
       if(typeof cam.comment!=='string')cam.comment='';
+      // v9→v10: 0 = derive bitrate from resolution + codec in the calculator.
+      if(typeof cam.bitrateMbps!=='number'||cam.bitrateMbps<0)cam.bitrateMbps=0;
       inv(cam);
     });
     if(!Array.isArray(f.WALLS))f.WALLS=[];

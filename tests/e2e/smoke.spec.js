@@ -46,6 +46,31 @@ test('heatmap mode pill cycles through metrics', async ({page}) => {
   expect(second).not.toBe(first);
 });
 
+test('worker heatmap paints, including the SINR mode', async ({page}) => {
+  const errors = trackErrors(page);
+  await page.goto('/');
+  await page.locator('[data-action="load-sample"]').click();
+  await expect(page.locator('#empty-state')).toHaveClass(/hidden/);
+  await expect(page.locator('.ap-grp')).toHaveCount(3);
+  // Turn the heatmap on and walk the mode pill until it reads SINR.
+  await page.locator('#btn-heat').click();
+  const pill = page.locator('#heat-mode-pill');
+  for (let i = 0; i < 6 && !/SINR/i.test((await pill.textContent()) || ''); i++) {
+    await pill.click();
+  }
+  await expect(pill).toContainText(/SINR/i);
+  // The worker result lands asynchronously — wait until pixels are painted.
+  await expect(page.locator('#heat-canvas')).toBeVisible();
+  await expect.poll(async () => page.evaluate(() => {
+    const cv = /** @type {HTMLCanvasElement} */ (document.getElementById('heat-canvas'));
+    const ctx = cv.getContext('2d');
+    const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 0) return true;
+    return false;
+  }), {timeout: 5000}).toBe(true);
+  expect(errors, errors.join('\n')).toEqual([]);
+});
+
 test('settings modal opens with sectioned headings', async ({page}) => {
   await page.goto('/');
   await page.locator('[data-action="show-settings"]').click();

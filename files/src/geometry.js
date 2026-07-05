@@ -27,6 +27,8 @@
  * @property {number=} headingDeg
  * @property {number=} eirpDbm    EIRP override. If absent, derived from txPower+gain-cable.
  * @property {number=} noiseFloorDbm  Noise floor for SNR/MCS. Default -95 dBm.
+ * @property {number=} chanWidthMhz  Channel width (20/40/80/160/320). Widens
+ *                                  the noise floor and scales throughput.
  * @property {string=} model      Propagation model key (see PROPAGATION_MODELS).
  * @property {number=} metersPerPx  Real-world scale. When present and > 0, dBm is
  *                                  computed with physical path loss (FSPL at the
@@ -121,6 +123,124 @@ export function pathLossDb(dM,fMhz,modelKey){
   return 20*Math.log10(fMhz)-27.55 + 10*n*Math.log10(d);
 }
 const DEFAULT_NOISE_FLOOR_DBM=-95;
+
+// ── Channel widths ─────────────────────────────────────────────────────────
+// Supported channel bandwidths (MHz). 320 MHz is WiFi 7 / 6 GHz only.
+export const CHANNEL_WIDTHS=[20,40,80,160,320];
+
+// Thermal noise scales with bandwidth: +3 dB per doubling over the 20 MHz
+// baseline. `baseNf20` is the project noise floor measured at 20 MHz.
+/**
+ * @param {number} baseNf20
+ * @param {number=} widthMhz
+ * @returns {number}
+ */
+export function noiseFloorForWidth(baseNf20,widthMhz){
+  const w=CHANNEL_WIDTHS.includes(widthMhz)?widthMhz:20;
+  return baseNf20+10*Math.log10(w/20);
+}
+
+// Throughput multiplier vs the 20 MHz MCS-table baseline. Ratios follow the
+// OFDMA data-subcarrier counts (242 / 484 / 980 / 1960 / 3920 tones), not a
+// naive 2x per doubling — wider channels waste proportionally fewer guards.
+const WIDTH_TONES={20:242,40:484,80:980,160:1960,320:3920};
+/**
+ * @param {number=} widthMhz
+ * @returns {number}
+ */
+export function widthThroughputMult(widthMhz){
+  const w=CHANNEL_WIDTHS.includes(widthMhz)?widthMhz:20;
+  return WIDTH_TONES[w]/WIDTH_TONES[20];
+}
+
+// ── Channel geometry (centre frequency + occupied range) ──────────────────
+// Band keys: '2.4' | '5' | '6' (see _bandForAp in app.js / bandKey below).
+/**
+ * @param {string=} freq  Band label like '5 GHz only'.
+ * @returns {'2.4'|'5'|'6'}
+ */
+export function bandKey(freq){
+  const f=freq||'';
+  if(f.indexOf('6 GHz')>=0)return '6';
+  if(f==='2.4 GHz only')return '2.4';
+  return '5';
+}
+/**
+ * Centre frequency (MHz) of a channel number on a band. Null if unparsable.
+ * @param {'2.4'|'5'|'6'} band
+ * @param {number} ch
+ * @returns {number|null}
+ */
+export function channelCenterMhz(band,ch){
+  if(!Number.isFinite(ch))return null;
+  if(band==='2.4')return ch===14?2484:2407+5*ch;
+  if(band==='5')return 5000+5*ch;
+  if(band==='6')return 5950+5*ch;
+  return null;
+}
+/**
+ * Occupied frequency range of (band, channel, width). Null if unparsable.
+ * 2.4 GHz channels are treated as 20 MHz wide regardless of the width field
+ * unless 40 is set explicitly (40 MHz on 2.4 GHz is legal but rude).
+ * @returns {{lo:number,hi:number}|null}
+ */
+export function channelRangeMhz(band,ch,widthMhz){
+  const c=channelCenterMhz(band,ch);
+  if(c===null)return null;
+  let w=CHANNEL_WIDTHS.includes(widthMhz)?widthMhz:20;
+  if(band==='2.4'&&w>40)w=20;
+  return {lo:c-w/2,hi:c+w/2};
+}
+/**
+ * Do two (band, channel, width) tuples occupy overlapping spectrum?
+ * Different bands never overlap. Unknown channels ('auto') → false.
+ */
+export function channelsOverlapMhz(bandA,chA,widthA,bandB,chB,widthB){
+  if(bandA!==bandB)return false;
+  const a=channelRangeMhz(bandA,chA,widthA);
+  const b=channelRangeMhz(bandB,chB,widthB);
+  if(!a||!b)return false;
+  return a.lo<b.hi && b.lo<a.hi;
+}
+
+// ── SINR ───────────────────────────────────────────────────────────────────
+// Given every AP's received power at a sample point, pick the strongest as
+// the serving AP and fold co-channel neighbours into the interference term:
+//   SINR = S − 10·log10(N_linear + ΣI_linear)
+// `contribs`: [{dbm, band, channel, widthMhz}] for each AP that reaches the
+// point. `noiseFloorDbm` should already be width-adjusted for the server.
+// Returns null when nothing reaches the point.
+/**
+ * @param {Array<{dbm:number,band:string,channel:number|null,widthMhz:number}>} contribs
+ * @param {number} noiseFloorDbm
+ * @returns {number|null}
+ */
+export function sinrFromContributions(contribs,noiseFloorDbm){
+  if(!contribs||!contribs.length)return null;
+  let server=contribs[0];
+  for(const c of contribs)if(c.dbm>server.dbm)server=c;
+  let denomMw=Math.pow(10,noiseFloorDbm/10);
+  for(const c of contribs){
+    if(c===server)continue;
+    if(!channelsOverlapMhz(server.band,server.channel,server.widthMhz,c.band,c.channel,c.widthMhz))continue;
+    denomMw+=Math.pow(10,c.dbm/10);
+  }
+  return server.dbm-10*Math.log10(denomMw);
+}
+
+// SINR where the noise floor is width-adjusted for the *serving* AP's channel
+// width. `baseNf20` is the project noise floor at 20 MHz.
+/**
+ * @param {Array<{dbm:number,band:string,channel:number|null,widthMhz:number}>} contribs
+ * @param {number} baseNf20
+ * @returns {number|null}
+ */
+export function sinrWithWidthNoise(contribs,baseNf20){
+  if(!contribs||!contribs.length)return null;
+  let server=contribs[0];
+  for(const c of contribs)if(c.dbm>server.dbm)server=c;
+  return sinrFromContributions(contribs,noiseFloorForWidth(baseNf20,server.widthMhz));
+}
 
 // 802.11ac/ax MCS minimum-SNR thresholds (dB) for a single spatial stream.
 // Approximate; used to map SNR → MCS index → expected Mbps.
@@ -336,7 +456,10 @@ export function dbmAt(ap,sx,sy,imgW,imgH,walls,opts){
 export function snrAt(ap,sx,sy,imgW,imgH,walls,opts){
   const dbm=dbmAt(ap,sx,sy,imgW,imgH,walls,opts);
   if(dbm===null)return null;
-  const nf=(opts&&Number.isFinite(opts.noiseFloorDbm))?opts.noiseFloorDbm:DEFAULT_NOISE_FLOOR_DBM;
+  let nf=(opts&&Number.isFinite(opts.noiseFloorDbm))?opts.noiseFloorDbm:DEFAULT_NOISE_FLOOR_DBM;
+  // Wider channels admit more thermal noise (+3 dB per doubling vs 20 MHz).
+  const cw=(opts&&typeof opts==='object')?opts.chanWidthMhz:undefined;
+  if(Number.isFinite(cw))nf=noiseFloorForWidth(nf,cw);
   return dbm-nf;
 }
 
@@ -372,7 +495,10 @@ export function mbpsAt(ap,sx,sy,imgW,imgH,walls,opts){
   for(const e of MCS_SNR_TABLE){if(snr>=e.snr)row=e;}
   if(!row)return 0;
   const mult=BAND_STREAM_MULT[ap.freq]??2.0;
-  return row.mbps*mult;
+  // MCS table is the 20 MHz baseline; scale by the channel-width tone ratio.
+  const cw=(opts&&typeof opts==='object')?opts.chanWidthMhz:undefined;
+  const wMult=Number.isFinite(cw)?widthThroughputMult(cw):1;
+  return row.mbps*mult*wMult;
 }
 
 // Returns whether a sample point is reachable by an AP considering wall

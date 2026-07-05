@@ -1,7 +1,9 @@
-// Minimal ZIP writer — STORE only (no compression). Enough to bundle the
-// handover pack (CSVs + an HTML summary) into one download with zero
-// dependencies; any unzip tool reads STORE entries. Pure byte logic so it's
-// unit-testable without the DOM.
+// Minimal ZIP writer + reader with zero dependencies. The writer is STORE
+// only (no compression) — enough to bundle the handover pack and .esx
+// exports; any unzip tool reads STORE entries. The reader handles STORE and
+// DEFLATE (via the platform DecompressionStream) so real-world archives like
+// Ekahau .esx files open too. Pure byte logic so it's unit-testable without
+// the DOM.
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -86,5 +88,58 @@ export function zipStore(files, when = new Date()) {
   const out = new Uint8Array(parts.reduce((n, b) => n + b.length, 0));
   let p = 0;
   for (const b of parts) { out.set(b, p); p += b.length; }
+  return out;
+}
+
+// ── Reader ──────────────────────────────────────────────────────────────────
+
+async function inflateRaw(bytes) {
+  const ds = new DecompressionStream('deflate-raw');
+  const stream = new Blob([bytes]).stream().pipeThrough(ds);
+  const buf = await new Response(stream).arrayBuffer();
+  return new Uint8Array(buf);
+}
+
+// Read a .zip: returns [{name, data: Uint8Array}]. Walks the central
+// directory (found via the end-of-central-directory record scanned from the
+// tail), so it tolerates leading junk and data descriptors. Supports STORE
+// and DEFLATE entries; anything else throws.
+/**
+ * @param {Uint8Array} bytes
+ * @returns {Promise<Array<{name:string,data:Uint8Array}>>}
+ */
+export async function zipRead(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  // EOCD signature scan from the end (comment can pad up to 64 KB).
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 65535); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('Not a zip file (no end-of-central-directory)');
+  const count = dv.getUint16(eocd + 10, true);
+  let off = dv.getUint32(eocd + 16, true);
+  const utf8 = new TextDecoder();
+  const out = [];
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) throw new Error('Corrupt central directory');
+    const method = dv.getUint16(off + 10, true);
+    const csize = dv.getUint32(off + 20, true);
+    const nameLen = dv.getUint16(off + 28, true);
+    const extraLen = dv.getUint16(off + 30, true);
+    const commentLen = dv.getUint16(off + 32, true);
+    const localOff = dv.getUint32(off + 42, true);
+    const name = utf8.decode(bytes.subarray(off + 46, off + 46 + nameLen));
+    // Local header repeats name/extra lengths; the data follows them.
+    const lNameLen = dv.getUint16(localOff + 26, true);
+    const lExtraLen = dv.getUint16(localOff + 28, true);
+    const dataStart = localOff + 30 + lNameLen + lExtraLen;
+    const raw = bytes.subarray(dataStart, dataStart + csize);
+    if (!name.endsWith('/')) {          // skip directory entries
+      if (method === 0) out.push({ name, data: raw.slice() });
+      else if (method === 8) out.push({ name, data: await inflateRaw(raw) });
+      else throw new Error(`Unsupported zip compression method ${method} for ${name}`);
+    }
+    off += 46 + nameLen + extraLen + commentLen;
+  }
   return out;
 }

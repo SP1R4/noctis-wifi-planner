@@ -109,6 +109,25 @@ export function subnetUsage(cidr, ips = []) {
   return { used, capacity: c.capacity, pct: Math.round((used / c.capacity) * 100) };
 }
 
+// ── Airtime / capacity ────────────────────────────────────────────────────
+// Estimated airtime utilization of an AP: aggregate client demand divided by
+// what the cell can actually deliver. `avgCellMbps` should be the average
+// achievable throughput across the AP's covered area (cell-edge clients drag
+// the shared airtime down, which a peak-rate figure would hide).
+// Returns a fraction (1.0 = 100% airtime); Infinity when the cell delivers 0.
+/**
+ * @param {number} clients        Expected concurrent clients on this AP.
+ * @param {number} perClientMbps  Demand per client in Mbps.
+ * @param {number} avgCellMbps    Average deliverable throughput in the cell.
+ * @returns {number}
+ */
+export function airtimeUtilization(clients, perClientMbps, avgCellMbps) {
+  const demand = Math.max(0, clients || 0) * Math.max(0, perClientMbps || 0);
+  if (demand === 0) return 0;
+  if (!(avgCellMbps > 0)) return Infinity;
+  return demand / avgCellMbps;
+}
+
 // Boxes of cable needed for a total length, given metres per box.
 export function cableBoxCount(totalM, boxM = 305) {
   if (!(totalM > 0)) return 0;

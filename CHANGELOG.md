@@ -6,6 +6,60 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.6.0] — 2026-07-05
+
+The "pro RF" release: interference-aware modelling, a worker-driven heatmap,
+CV wall detection, DORI camera planning, Ekahau/DXF interop, and live
+controller + survey integration in the desktop app.
+
+### Added
+- **SINR heatmap mode**: per-pixel signal-to-interference-plus-noise — every
+  co-channel AP whose spectrum overlaps the serving AP now counts as
+  interference, so "coverage is green but the RF is contested" finally shows
+  up on the map.
+- **Channel width per AP** (20/40/80/160/320 MHz): widens the noise floor
+  (+3 dB per doubling), scales throughput by real OFDMA tone ratios, drives
+  spectrum-true channel-overlap warnings, and makes ⌁ Auto-channel
+  width-aware (a 40 MHz pair on 36/40 now counts as the conflict it is).
+- **Airtime estimates**: per-AP expected clients × per-client Mbps (Settings →
+  Cabling & capacity) vs the cell's *average* deliverable throughput; the AP
+  panel shows live utilization and ✓ Validate flags cells near or past
+  saturation.
+- **Worker-based heatmap engine**: the per-pixel heatmap now computes in a Web
+  Worker (inline-bundled, still works from `file://`), with stale-job dropping
+  and a synchronous fallback — dragging an AP no longer janks the UI.
+- **▦ Detect walls**: classical-CV wall detection from the floor-plan bitmap
+  (Otsu binarization + Hough transform, zero dependencies) with a dashed-blue
+  preview and accept/discard confirm.
+- **DORI bands** (IEC 62676-4): camera cones now show Identify / Recognize /
+  Observe / Detect pixel-density zones from the model's resolution + FoV and
+  the floor scale; per-tier distances listed in the camera panel.
+- **Camera storage calculator**: per-camera bitrate (auto from resolution ×
+  codec, or manual override), project-wide retention + H.264/H.265 setting;
+  NVR sizing appears in the camera panel, ✓ Validate and the BoM CSV.
+- **DXF wall import** (↺ DXF): LINE / LWPOLYLINE / legacy POLYLINE entities
+  become walls, Y-axis flipped and extents fitted to the plan — or onto a
+  generated blank canvas when no plan is loaded yet.
+- **Ekahau interop**: import `.esx` projects (⇊ ESX — floors with plan images
+  and scale, walls with material mapping, AP positions/names/channels/tx) and
+  export a best-effort `.esx` (⇈ ESX). Powered by a new dependency-free zip
+  *reader* (STORE + DEFLATE via `DecompressionStream`).
+- **UniFi controller sync** (desktop app, ⇅ UniFi): pull the device list from
+  a UniFi OS console or legacy controller (self-signed certs OK) to fill in
+  as-built IP / firmware / serial and flip connected devices to Live; push
+  the planned channel / width / Tx-power to matching APs after a confirm.
+- **Live survey mode** (desktop app, 📶): click where you're standing and the
+  app samples the machine's current WiFi RSSI (macOS `system_profiler`,
+  Windows `netsh`, Linux `iw`) into a survey point — predicted-vs-measured
+  with no CSV round-trip.
+- Project schema v10 (`chanWidth` on APs, `bitrateMbps` on cameras, airtime /
+  DORI / storage / UniFi settings); older files migrate automatically.
+
+### Changed
+- Throughput heatmap and SNR/MCS modes respect each AP's channel width.
+- Channel-overlap pills (⚡) use occupied-spectrum overlap instead of the
+  channel-number heuristic.
+
 ## [3.5.0] — 2026-06-20
 
 Organization tools — Plexus as the system of record for the install, not just

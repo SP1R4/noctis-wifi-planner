@@ -611,6 +611,18 @@ export const HEATMAP_MODES={
       {v:0,   color:'#c0382b', label:'<10 Mbps'},
     ],
   },
+  sinr:{
+    label:'SINR (dB)',
+    unit:'dB',
+    metric:'sinr',
+    stops:[
+      {v:30, color:'#1e7d3c', label:'Excellent (≥30 dB)'},
+      {v:20, color:'#76b542', label:'Strong (≥20 dB)'},
+      {v:13, color:'#e7b40e', label:'Fair (≥13 dB)'},
+      {v:5,  color:'#e07b22', label:'Weak (≥5 dB)'},
+      {v:-5, color:'#c0382b', label:'Interference-limited (<5 dB)'},
+    ],
+  },
 };
 export const HEATMAP_MODE_KEYS=Object.keys(HEATMAP_MODES);
 

@@ -23,6 +23,11 @@
     <input type="file" id="file-up" accept="image/*,.svg,.pdf,application/pdf" style="display:none" data-change-action="upload-map"/>
     <button class="btn" data-action="open-svg" title="Import walls from an SVG floor-plan">↺ Walls SVG</button>
     <input type="file" id="svg-up" accept=".svg,image/svg+xml" style="display:none" data-change-action="import-svg-walls"/>
+    <button class="btn" data-action="open-dxf" title="Import walls from a DXF (LINE/POLYLINE)">↺ DXF</button>
+    <input type="file" id="dxf-up" accept=".dxf" style="display:none" data-change-action="import-dxf-walls"/>
+    <button class="btn" data-action="detect-walls" title="Auto-detect walls from the floor-plan image (Hough transform)">▦ Detect walls</button>
+    <button class="btn" data-action="open-esx" title="Import an Ekahau project (.esx)">⇊ ESX</button>
+    <input type="file" id="esx-up" accept=".esx,.zip" style="display:none" data-change-action="import-esx"/>
     <button class="btn" data-action="open-survey" title="Import RSSI survey samples from a CSV">↺ Survey CSV</button>
     <input type="file" id="survey-up" accept=".csv,text/csv" style="display:none" data-change-action="import-survey-csv"/>
     <button class="btn" data-action="save">💾 Save</button>
@@ -45,6 +50,8 @@
     <button class="btn" data-action="install-sheets" title="Per-AP install sheets PDF">⎙ Install sheets</button>
     <button class="btn" data-action="show-inventory" title="As-built inventory, rollout status & organization tools">▤ Inventory</button>
     <button class="btn" data-action="handover-pack" title="Zip the HTML summary + every CSV deliverable">⇩ Handover</button>
+    <button class="btn" data-action="export-esx" title="Export the project as an Ekahau .esx (best-effort)">⇈ ESX</button>
+    <button class="btn" id="btn-unifi" data-action="show-unifi" title="Pull as-built data from / push the channel plan to a UniFi controller (desktop app)" style="display:none">⇅ UniFi</button>
     <button class="btn btn-icon-only" id="btn-theme" data-action="toggle-theme" title="Toggle dark mode" aria-label="Toggle theme">☾</button>
     <button class="btn btn-icon-only" data-action="show-revisions" title="Project revisions" aria-label="Revisions">⟲</button>
     <button class="btn btn-icon-only" data-action="show-plugins" title="Custom vendor catalogs" aria-label="Plugins">+</button>
@@ -64,6 +71,7 @@
       <button class="btn-tool" id="btn-ruler" data-action="set-mode" data-arg="ruler" title="Ruler (R)" aria-label="Ruler">↔</button>
       <button class="btn-tool" id="btn-wall" data-action="set-mode" data-arg="wall" title="Wall (L)" aria-label="Wall">▌</button>
       <button class="btn-tool" id="btn-anno" data-action="set-mode" data-arg="anno" title="Annotation (N)" aria-label="Annotation">✎</button>
+      <button class="btn-tool" id="btn-survey" data-action="set-mode" data-arg="survey" title="Live WiFi survey — click the map where you stand (desktop app)" aria-label="Live survey" style="display:none">📶</button>
     </div>
     <div class="anno-sub-bar" id="anno-sub-bar" style="display:none" role="group" aria-label="Annotation type">
       <button class="btn-tool active" data-action="anno-sub" data-arg="text" data-anno-sub="text" title="Text label" aria-label="Text label">T</button>

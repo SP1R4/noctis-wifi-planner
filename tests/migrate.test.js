@@ -310,6 +310,28 @@ describe('migrateProject — v8 → v9 (install status, inventory, naming, basel
   test('PROJECT_VERSION is stamped',()=>{
     const [data]=migrateProject({version:8,floors:floors()});
     expect(data.version).toBe(PROJECT_VERSION);
-    expect(PROJECT_VERSION).toBe(9);
+    expect(PROJECT_VERSION).toBe(10);
+  });
+  // v9 → v10
+  test('APs gain a 20 MHz channel width; junk widths are normalized',()=>{
+    const [data]=migrateProject({version:9,floors:[{APS:[{...baseAP},{...baseAP,id:'ap2',chanWidth:80},{...baseAP,id:'ap3',chanWidth:33}],DZS:[],SWS:[],WALLS:[]}]});
+    const [a,b,c]=data.floors[0].APS;
+    expect(a.chanWidth).toBe(20);
+    expect(b.chanWidth).toBe(80);
+    expect(c.chanWidth).toBe(20);
+  });
+  test('cameras gain bitrateMbps=0 (auto)',()=>{
+    const [data]=migrateProject({version:9,floors:[{APS:[],DZS:[],SWS:[],WALLS:[],CAMS:[{id:'cm1',fx:.5,fy:.5},{id:'cm2',fx:.5,fy:.5,bitrateMbps:6}]}]});
+    expect(data.floors[0].CAMS[0].bitrateMbps).toBe(0);
+    expect(data.floors[0].CAMS[1].bitrateMbps).toBe(6);
+  });
+  test('v10 settings defaults: airtime, DORI/storage, UniFi',()=>{
+    const [data]=migrateProject({version:9,floors:floors()});
+    expect(data.settings.perClientMbps).toBe(5);
+    expect(data.settings.showDori).toBe(true);
+    expect(data.settings.retentionDays).toBe(30);
+    expect(data.settings.storageCodec).toBe('h265');
+    expect(data.settings.unifiUrl).toBe('');
+    expect(data.settings.unifiSite).toBe('default');
   });
 });
